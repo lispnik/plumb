@@ -7,7 +7,7 @@ carrying Lisp objects, instead of processes and byte streams. SBCL only
 (`sb-thread`, `sb-mop`), no external dependencies, no Quicklisp/ocicl needed.
 
 ```
-sbcl --eval '(asdf:test-system "plumb")'   ; 150 assertions, all passing
+sbcl --eval '(asdf:test-system "plumb")'   ; 160 assertions, all passing
 make                                       ; dump bin/plumb
 sbcl --script demo.lisp
 ```
@@ -80,9 +80,10 @@ sbcl --script demo.lisp
    (CLIM-presentation style), so previous output stays live and clickable.
 5. **Reader, the rest of it.** `src/reader.lisp` implements word mode: `|`,
    `{...}` blocks, `.field`, earmuffed variables, `(...)`/`#'f` escapes, and
-   the leading-paren dispatch, and `1kb`-style suffix literals. Still missing:
-   globbing and redirection. These decisions are settled -- don't re-open them
-   while adding to it:
+   the leading-paren dispatch, and `1kb`-style suffix literals. Globbing needed
+   no reader syntax: `*.lisp` is already a string, and `ls` globs it (see
+   `glob` in stages.lisp). Still missing: redirection. These decisions are
+   settled -- don't re-open them while adding to it:
    - `{...}` emits `($ ...)` and `.name` emits `(fld :name)`. The reader is a
      source-to-source pass; the result is handed to the existing `eval`, so
      stages, `present`, teardown and `help` all work unchanged on day one.

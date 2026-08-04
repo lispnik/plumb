@@ -19,7 +19,7 @@
    #:pipeline-failures #:pipeline-threads #:pipeline-stages
    #:pipeline-channels #:pipeline-sink #:pipeline-error #:check-pipeline #:pipeline-type-error
    ;; built-in stages
-   #:from-list #:counter #:ls #:lines #:sh #:to-sh
+   #:from-list #:counter #:ls #:lines #:sh #:to-sh #:glob
    #:where #:xform #:take #:drop #:uniq #:sort-by #:tally #:accumulate
    #:peek #:to-text #:print-items #:table
    ;; external processes

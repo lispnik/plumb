@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 150 assertions
+(asdf:test-system "plumb")     ; 160 assertions
 ```
 
 ```
@@ -60,6 +60,29 @@ against would be a silent wrong answer rather than an error.
 ls src/ | where {(> .size 10kb)}
 sh "find . -type f" | take 5
 ```
+
+### Globbing
+
+`ls` takes a pattern, so globbing needs no reader syntax at all — `*.lisp` is
+already a plain string by the earmuff rule, and `ls` decides what to do with it:
+
+```
+$ plumb 'ls src/*.lisp | where {(> .size 10kb)} | sort-by .size :desc'
+$ plumb 'ls **/*.lisp | tally'          # ** descends
+$ plumb 'ls src/[cf]*.lisp'             # character classes
+$ plumb 'ls src/?ield.lisp'             # ? is one character
+```
+
+A directory lists its members with or without the trailing slash, a plain file
+names itself, and a pattern matching nothing yields nothing rather than an
+error. Results are **sorted**, so pipelines built on `ls` are reproducible.
+
+Note that shell `*` and Common Lisp `*` do not mean the same thing — CL's means
+*"any name, no type"*, which would silently miss every file with an extension —
+so `glob` translates before handing the pattern to `directory`.
+
+There is no glob-in-stage-position shorthand: write `ls *.lisp`, not `*.lisp`.
+Same reasoning as `sh` — an unknown first word stays an error.
 
 Suffixes are two narrow substitutions, not a reader macro — catching `1kb` at
 read time would mean owning the digit characters and reimplementing CL's number

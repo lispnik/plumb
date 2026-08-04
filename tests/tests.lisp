@@ -179,6 +179,34 @@
             (lambda (x) x (incf seen) (setf max-seen seen)))
       (check (= 20 max-seen) :each-count))))
 
+(defun names (paths) (mapcar #'file-namestring paths))
+
+(defun test-glob ()
+  "GLOB backs LS.  Run from the project root, which the test suite is."
+  (with-timeout (10 :glob)
+    (check (member "channel.lisp" (names (glob "src/*.lisp")) :test #'string=)
+           :star-matches-by-type)
+    (check (member "field.lisp" (names (glob "src/?ield.lisp")) :test #'string=)
+           :question-mark-is-one-character)
+    (check (= 3 (length (glob "src/[cf]*.lisp"))) :character-class)
+    ;; ** descends, so it finds strictly more than a flat *.
+    (check (> (length (glob "**/*.lisp")) (length (glob "*.lisp"))) :double-star-descends)
+    ;; Shell * means anything.  CL * means "any name, no type", so an
+    ;; untranslated pattern would miss every file with an extension.
+    (check (member "README.md" (names (glob "*")) :test #'string=)
+           :bare-star-matches-extensions-too)
+    ;; A directory lists its members with or without the trailing slash.
+    ;; Without the slash this used to merge to *.* carrying no directory
+    ;; component, and silently listed the current directory instead.
+    (check (equal (names (glob "src/")) (names (glob "src"))) :trailing-slash-optional)
+    (check (member "channel.lisp" (names (glob "src")) :test #'string=) :directory-lists-members)
+    ;; A plain file is itself; a pattern matching nothing is empty, not an error.
+    (check (equal '("README.md") (names (glob "README.md"))) :a-file-names-itself)
+    (check (null (glob "*.nosuchtype")) :no-matches-is-empty)
+    ;; Sorted, so pipelines built on LS are reproducible.
+    (let ((got (names (glob "src/*.lisp"))))
+      (check (equal got (sort (copy-list got) #'string<)) :results-are-sorted))))
+
 ;;; --------------------------------------------------- the word-mode reader
 ;;;
 ;;; READ-SHELL is a source-to-source pass, so most of it tests by comparing
@@ -617,6 +645,7 @@ leaves it plain and the assertions can look for bare text."
                   test-type-check
                   test-cancel
                   test-each-backpressure-end-to-end
+                  test-glob
                   test-reader-dispatch
                   test-reader-pipeline
                   test-reader-blocks

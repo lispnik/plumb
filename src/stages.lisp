@@ -25,11 +25,45 @@ downstream TAKE really does tear the source down."
       (concatenate 'string (file-entry-name object) "/")
       (file-entry-name object)))
 
-(defstage ls (&optional (directory *default-pathname-defaults*))
-  "Emit a FILE-ENTRY per directory member."
+(defun as-directory (pathname)
+  "PATHNAME as a directory, whether or not it was written with a trailing /."
+  (if (pathname-name pathname)
+      (make-pathname :directory (append (or (pathname-directory pathname) '(:relative))
+                                        (list (file-namestring pathname)))
+                     :name nil :type nil :defaults pathname)
+      pathname))
+
+(defun shell-glob-pathname (pathname)
+  "Shell glob semantics on a CL pathname.  Shell * means anything; CL * means
+`any name, no type', so *.lisp works untranslated but * and f* do not -- a
+wild name with no type has to match any type as well."
+  (if (and (wild-pathname-p pathname :name) (null (pathname-type pathname)))
+      (make-pathname :type :wild :defaults pathname)
+      pathname))
+
+(defun glob (spec)
+  "Pathnames matching SPEC, sorted so output is stable.  A pattern containing
+* ? or [...] globs and ** descends; a directory lists its members; anything
+else names itself."
+  (flet ((sorted (paths) (sort paths #'string< :key #'namestring)))
+    (let ((pathname (pathname spec)))
+      (cond
+        ((wild-pathname-p pathname)
+         (sorted (directory (shell-glob-pathname pathname) :resolve-symlinks nil)))
+        ;; A plain name that is a file is just itself.
+        ((let ((truename (and (pathname-name pathname) (probe-file pathname))))
+           (and truename (pathname-name truename) (list truename))))
+        ;; ...and one that is a directory lists what is in it.  Without this,
+        ;; (ls "src") with no trailing slash merges to *.* carrying no
+        ;; directory component, and silently lists the current directory.
+        (t (sorted (directory (merge-pathnames "*.*" (as-directory pathname))
+                              :resolve-symlinks nil)))))))
+
+(defstage ls (&optional (pattern *default-pathname-defaults*))
+  "Emit a FILE-ENTRY per match.  A directory lists its members; a pattern
+containing * ? or [...] globs, and ** descends into subdirectories."
   (:consumes nil) (:produces :objects)
-  (dolist (p (directory (merge-pathnames "*.*" (pathname directory))
-                        :resolve-symlinks nil))
+  (dolist (p (glob pattern))
     (let ((dir-p (null (pathname-name p))))
       (emit (make-file-entry
              :path p
