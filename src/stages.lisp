@@ -1,0 +1,180 @@
+;;;; stages.lisp -- a starter set.  Note how little any of them know about
+;;;; threads: the concurrency is entirely in RECV, SEND and SPAWN-STAGE.
+
+(in-package #:plumb)
+
+;;; ---------------------------------------------------------------- sources
+
+(defstage from-list ((items sequence))
+  "Emit each element of ITEMS."
+  (:consumes nil) (:produces :objects)
+  (map nil (lambda (x) (emit x)) items))
+
+(defstage counter (&key (from 0) (by 1) limit)
+  "Emit integers forever (or until LIMIT).  Useful for proving that a
+downstream TAKE really does tear the source down."
+  (:consumes nil) (:produces :objects)
+  (loop for i = from then (+ i by)
+        while (or (null limit) (< i limit))
+        do (emit i)))
+
+(defstruct file-entry path name size mtime dir-p)
+
+(defmethod present ((object file-entry))
+  (if (file-entry-dir-p object)
+      (concatenate 'string (file-entry-name object) "/")
+      (file-entry-name object)))
+
+(defstage ls (&optional (directory *default-pathname-defaults*))
+  "Emit a FILE-ENTRY per directory member."
+  (:consumes nil) (:produces :objects)
+  (dolist (p (directory (merge-pathnames "*.*" (pathname directory))
+                        :resolve-symlinks nil))
+    (let ((dir-p (null (pathname-name p))))
+      (emit (make-file-entry
+             :path p
+             :name (if dir-p
+                       (car (last (pathname-directory p)))
+                       (file-namestring p))
+             :dir-p dir-p
+             :size (unless dir-p
+                     (ignore-errors
+                      (with-open-file (s p :element-type '(unsigned-byte 8))
+                        (file-length s))))
+             :mtime (ignore-errors (file-write-date p)))))))
+
+(defstruct line text number source)
+
+(defmethod present ((object line)) (line-text object))
+
+(defun emit-lines (stream source)
+  "Read STREAM to EOF, emitting one LINE per line.  Shared by LINES and SH.
+EMIT is a macro over (SEND (PORT :OUT) ...) and PORT reads the *OUTPUTS*
+special, so an ordinary function called from a stage thread can emit."
+  (loop for n from 1
+        for text = (read-line stream nil nil)
+        while text
+        do (send (port :out) (make-line :text text :number n :source source))))
+
+(defstage lines ((stream stream))
+  "Byte/character boundary: turn a CL stream into LINE objects.  This is where
+an external process's stdout enters the object world."
+  (:consumes nil) (:produces :objects)
+  (emit-lines stream stream))
+
+;;; ------------------------------------------------------------- transforms
+
+(defstage where ((pred (or function symbol)))
+  "Pass through only the objects satisfying PRED."
+  (:consumes :objects) (:produces :objects)
+  (let ((pred (ensure-fn pred)))
+    (do-input (x)
+      (when (funcall pred x)
+        (emit x)))))
+
+(defstage xform ((fn (or function symbol)))
+  "Apply FN to each object."
+  (:consumes :objects) (:produces :objects)
+  (let ((fn (ensure-fn fn)))
+    (do-input (x)
+      (emit (funcall fn x)))))
+
+(defstage take ((n (integer 0)))
+  "Pass the first N objects, then stop the whole upstream."
+  (:consumes :objects) (:produces :objects)
+  (when (zerop n) (finish))
+  (do-input (x)
+    (emit x)
+    (when (zerop (decf n)) (finish))))
+
+(defstage drop ((n (integer 0)))
+  "Discard the first N objects, pass the rest."
+  (:consumes :objects) (:produces :objects)
+  (do-input (x)
+    (if (plusp n) (decf n) (emit x))))
+
+(defstage uniq (&key (test #'eql) key)
+  "Pass an object only the first time its KEY is seen.  TEST defaults to EQL,
+so string keys want :TEST #'EQUAL."
+  (:consumes :objects) (:produces :objects)
+  (let ((seen '()) (key (if key (ensure-fn key) #'identity)))
+    (do-input (x)
+      (let ((k (funcall key x)))
+        (unless (member k seen :test test)
+          (push k seen)
+          (emit x))))))
+
+(defstage peek (&key (stream *standard-output*) (prefix "-> "))
+  "Tap: print each object as it goes by, pass it on unchanged."
+  (:consumes :objects) (:produces :objects)
+  (do-input (x)
+    (format stream "~a~a~%" prefix (present x))
+    (emit x)))
+
+;;; A collecting stage: emits nothing until its input hits EOF.  Sorting is
+;;; inherently a barrier, and the type system does not need to know that --
+;;; backpressure handles it.
+(defstage sort-by ((key (or function symbol)) &key desc (predicate nil))
+  "Sort the whole stream by KEY.  A barrier: nothing is emitted until the input
+hits EOF, which the type signature does not say and does not need to."
+  (:consumes :objects) (:produces :objects)
+  (let ((key (ensure-fn key))
+        (buf (make-array 16 :adjustable t :fill-pointer 0))
+        (pred (or predicate #'default-lessp)))
+    (do-input (x) (vector-push-extend x buf))
+    (let ((sorted (sort buf (if desc (complement pred) pred) :key key)))
+      (map nil (lambda (x) (emit x)) sorted))))
+
+(defun default-lessp (a b)
+  (cond ((and (realp a) (realp b)) (< a b))
+        ((and (stringp a) (stringp b)) (string< a b))
+        ((and (symbolp a) (symbolp b)) (string< (string a) (string b)))
+        ((null a) (not (null b)))
+        ((null b) nil)
+        (t (string< (princ-to-string a) (princ-to-string b)))))
+
+(defstage tally (&key key)
+  "Count objects (per KEY, if given) and emit the totals at EOF."
+  (:consumes :objects) (:produces :objects)
+  (if key
+      (let ((counts (make-hash-table :test #'equal))
+            (key (ensure-fn key)))
+        (do-input (x) (incf (gethash (funcall key x) counts 0)))
+        (maphash (lambda (k v) (emit (list :key k :count v))) counts))
+      (let ((n 0))
+        (do-input (x) (incf n))
+        (emit n))))
+
+(defstage accumulate ((fn (or function symbol)) initial)
+  "Fold the stream, emitting one result at EOF."
+  (:consumes :objects) (:produces :objects)
+  (let ((fn (ensure-fn fn)) (acc initial))
+    (do-input (x) (setf acc (funcall fn acc x)))
+    (emit acc)))
+
+;;; ------------------------------------------------------------------ sinks
+
+(defstage to-text (&key (formatter nil))
+  "Objects back out to text.  The other half of the byte boundary."
+  (:consumes :objects) (:produces :bytes)
+  (let ((formatter (if formatter (ensure-fn formatter)
+                       (lambda (x) (princ-to-string x)))))
+    (do-input (x)
+      (emit (funcall formatter x)))))
+
+(defstage print-items (&key (stream *standard-output*))
+  "Print each object to STREAM, one line each.  A sink: produces nothing."
+  (:consumes t) (:produces nil)
+  (do-input (x)
+    (write-line (present x) stream)
+    (force-output stream)))
+
+(defstage table (&key columns (stream *standard-output*) (max-width 40))
+  "Buffer the whole stream, then print it as an aligned table.  A barrier, like
+SORT-BY and for the same reason: a column cannot be sized until the last row
+has arrived.  COLUMNS defaults to the union of FIELDS across the rows."
+  (:consumes :objects) (:produces nil)
+  (let ((rows (make-array 16 :adjustable t :fill-pointer 0)))
+    (do-input (x) (vector-push-extend x rows))
+    (render-table (coerce rows 'list)
+                  :columns columns :stream stream :max-width max-width)))
