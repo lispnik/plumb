@@ -7,7 +7,7 @@ carrying Lisp objects, instead of processes and byte streams. SBCL only
 (`sb-thread`, `sb-mop`), no external dependencies, no Quicklisp/ocicl needed.
 
 ```
-sbcl --eval '(asdf:test-system "plumb")'   ; 137 assertions, all passing
+sbcl --eval '(asdf:test-system "plumb")'   ; 150 assertions, all passing
 make                                       ; dump bin/plumb
 sbcl --script demo.lisp
 ```
@@ -80,9 +80,9 @@ sbcl --script demo.lisp
    (CLIM-presentation style), so previous output stays live and clickable.
 5. **Reader, the rest of it.** `src/reader.lisp` implements word mode: `|`,
    `{...}` blocks, `.field`, earmuffed variables, `(...)`/`#'f` escapes, and
-   the leading-paren dispatch. Still missing: `1kb`-style suffix literals,
-   globbing, and redirection. These decisions are settled -- don't re-open
-   them while adding to it:
+   the leading-paren dispatch, and `1kb`-style suffix literals. Still missing:
+   globbing and redirection. These decisions are settled -- don't re-open them
+   while adding to it:
    - `{...}` emits `($ ...)` and `.name` emits `(fld :name)`. The reader is a
      source-to-source pass; the result is handed to the existing `eval`, so
      stages, `present`, teardown and `help` all work unchanged on day one.
@@ -115,6 +115,13 @@ sbcl --script demo.lisp
      more than read one field.
    - **A trailing keyword means T** — `sort-by .size :desc` is `:desc t`.
      Shell flags do not carry values.
+   - **Suffix literals are a substitution, not a reader macro.** Catching
+     `1kb` at read time means owning the digit characters and reimplementing
+     CL number syntax -- floats, ratios, radix, and the symbols `1+` and `1-`.
+     Two narrow rewrites instead: on the token in word mode, and on the symbol
+     `|1KB|` inside a block, which is read as ordinary Lisp. Sizes are binary
+     and durations are seconds; minutes are `min` because `m` is megabytes.
+     Known wart: the block rewrite does not respect `quote`.
    - **`sh` stays explicit.** No falling back to an external command when the
      first word is not a known stage. That fallback is what shells do, but it
      is a lookup rule, and under it a mistyped stage name silently becomes a

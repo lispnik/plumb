@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 137 assertions
+(asdf:test-system "plumb")     ; 150 assertions
 ```
 
 ```
@@ -48,7 +48,23 @@ $ plumb -i                                  # or just `plumb` on a terminal
 | `*x*`, `+x+` | a variable, not a string — so globs like `*.lisp` stay strings |
 | `:desc` | a trailing keyword is a flag, so it means `:desc t` |
 | `(...)`, `#'f` | Lisp, verbatim — as a whole stage or as one argument |
-| number | a number; `5kb` is still a string (no suffix literals yet) |
+| number | `5`, or a suffixed literal — `1kb` `2mb` `1.5gb`, `30s` `5min` `2h` `1d` |
+
+Sizes are **binary** — `1kb` is 1024, the way `ls -h` and `du -h` mean it —
+and durations are **seconds**, so they compose with `get-universal-time`, which
+is what `.mtime` holds. Minutes are spelled `min`, not `m`: `m` is megabytes
+here, and a unit that changed meaning depending on the field you compared it
+against would be a silent wrong answer rather than an error.
+
+```
+ls src/ | where {(> .size 10kb)}
+sh "find . -type f" | take 5
+```
+
+Suffixes are two narrow substitutions, not a reader macro — catching `1kb` at
+read time would mean owning the digit characters and reimplementing CL's number
+syntax. One consequence: inside a block the rewrite does not respect `quote`,
+so `'(1kb)` becomes `'(1024)` and a literal `.size` symbol cannot be written.
 
 Blocks, forms and strings may each contain a `\|`, so splitting on the pipe is
 depth-aware rather than a first pass. The reader is a source-to-source pass —

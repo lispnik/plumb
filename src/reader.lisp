@@ -1,6 +1,6 @@
 ;;;; reader.lisp -- word mode: the surface syntax field.lisp was built for.
 ;;;;
-;;;;   ls src/ | where {(> .size 1024)} | sort-by .size :desc | take 5
+;;;;   ls src/ | where {(> .size 1kb)} | sort-by .size :desc | take 5
 ;;;;
 ;;;; becomes
 ;;;;
@@ -111,12 +111,15 @@ so the keyword only has to name the slot, not match its print case."
 (defun field-symbol-p (object)
   (and (symbolp object) object (field-token-p (symbol-name object))))
 
-(defun expand-field-accessors (form)
-  "Replace .NAME symbols with (FLD :NAME), anywhere in FORM.  A symbol walk, so
-strings in the tree are left alone -- textual substitution would corrupt them."
+(defun expand-block-syntax (form)
+  "Inside a block, replace .NAME with (FLD :NAME) and 1kb with 1024.  Block
+contents are READ as Lisp, so both arrive as symbols rather than as tokens.
+A symbol walk, so strings in the tree are left alone -- textual substitution
+would corrupt them."
   (cond ((field-symbol-p form) (list 'fld (field-keyword (symbol-name form))))
-        ((consp form) (cons (expand-field-accessors (car form))
-                            (expand-field-accessors (cdr form))))
+        ((and (symbolp form) form (suffixed-number (symbol-name form))))
+        ((consp form) (cons (expand-block-syntax (car form))
+                            (expand-block-syntax (cdr form))))
         (t form)))
 
 (defun earmuffed-p (token)
@@ -128,11 +131,54 @@ must match, which is what keeps *.lisp and a lone * as globs."
               (char= (char token (1- (length token))) c)))))
 
 (defun numeric-token (token)
-  "The number TOKEN denotes, or NIL.  Must consume the whole token, so 5kb
-stays a string until suffix literals exist."
+  "The number TOKEN denotes with no suffix, or NIL.  Must consume the whole
+token, so 5kb falls through to SUFFIXED-NUMBER."
   (multiple-value-bind (value end)
       (ignore-errors (let ((*read-eval* nil)) (read-from-string token)))
     (when (and (numberp value) (eql end (length token))) value)))
+
+;;; Suffix literals.
+;;;
+;;; Sizes are binary, because every tool that prints a size this way -- ls -h,
+;;; du -h -- means 1024.  Durations are seconds, so they compose with
+;;; GET-UNIVERSAL-TIME, which is what .mtime is measured in.
+;;;
+;;; Minutes are spelled MIN, not M.  M is megabytes here, and a unit that means
+;;; two different things depending on the field it is compared against is a
+;;; silent wrong answer rather than an error.
+
+(defparameter +suffix-multipliers+
+  '(("k" . 1024) ("kb" . 1024) ("kib" . 1024)
+    ("m" . 1048576) ("mb" . 1048576) ("mib" . 1048576)
+    ("g" . 1073741824) ("gb" . 1073741824) ("gib" . 1073741824)
+    ("t" . 1099511627776) ("tb" . 1099511627776) ("tib" . 1099511627776)
+    ("s" . 1) ("sec" . 1) ("min" . 60) ("h" . 3600)
+    ("d" . 86400) ("w" . 604800)))
+
+(defun split-numeral-and-suffix (name)
+  "\"1kb\" -> \"1\" and \"kb\".  NIL unless NAME starts with a numeral, which
+is what keeps symbols like 1+ and x1k out of this."
+  (let* ((start (if (and (plusp (length name)) (member (char name 0) '(#\- #\+))) 1 0))
+         (i start))
+    (loop while (and (< i (length name))
+                     (or (digit-char-p (char name i)) (char= (char name i) #\.)))
+          do (incf i))
+    (when (and (> i start) (< i (length name)))
+      (values (subseq name 0 i) (subseq name i)))))
+
+(defun suffixed-number (name)
+  "The number \"1kb\" denotes, or NIL.  Case-insensitive, so 1KB works too."
+  (multiple-value-bind (numeral suffix) (split-numeral-and-suffix (string name))
+    (when numeral
+      (let ((multiplier (cdr (assoc suffix +suffix-multipliers+ :test #'string-equal)))
+            (n (ignore-errors (let ((*read-eval* nil)) (read-from-string numeral)))))
+        (when (and multiplier (realp n))
+          (let ((value (* n multiplier)))
+            ;; 1.5kb is 1536, not 1536.0 -- a size that lands on a whole
+            ;; number should compare as one.
+            (if (and (floatp value) (= value (ffloor value)))
+                (round value)
+                value)))))))
 
 (defun read-lisp-token (token)
   (let ((*package* (find-package '#:plumb)))
@@ -149,7 +195,7 @@ stays a string until suffix literals exist."
 (defun block-form (token)
   "{...} -> ($ ...), with .name accessors expanded inside."
   (let ((body (read-lisp-forms (subseq token 1 (max 1 (1- (length token)))))))
-    `($ ,@(expand-field-accessors body))))
+    `($ ,@(expand-block-syntax body))))
 
 (defun token-form (token)
   (let ((c (char token 0)))
@@ -162,6 +208,7 @@ stays a string until suffix literals exist."
           ((field-token-p token) (list '$ (list 'fld (field-keyword token))))
           ((earmuffed-p token) (read-lisp-token token))
           ((numeric-token token))
+          ((suffixed-number token))
           (t token))))
 
 (defun keyword-token-p (token)
@@ -193,7 +240,8 @@ is something to evaluate."
     (or (member c '(#\" #\{ #\( #\: #\#))
         (field-token-p token)
         (earmuffed-p token)
-        (and (numeric-token token) t))))
+        (and (numeric-token token) t)
+        (and (suffixed-number token) t))))
 
 (defun read-shell (text)
   "Word-mode TEXT as a Lisp form."

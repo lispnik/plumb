@@ -226,8 +226,30 @@
   ;; Earmuffs need both ends, which is what keeps globs as strings.
   (check (equal '(ls "*.lisp") (read-shell "ls *.lisp")) :glob-stays-a-string)
   (check (equal '(ls "*") (read-shell "ls *")) :lone-star-stays-a-string)
-  ;; No suffix literals yet, so 5kb is a word.
-  (check (equal '(take "5kb") (read-shell "take 5kb")) :no-suffix-literals-yet))
+  (check (equal '(take 5120) (read-shell "take 5kb")) :suffix-literal-as-an-argument))
+
+(defun test-reader-suffix-literals ()
+  ;; Sizes are binary, the way ls -h and du -h mean them.
+  (check (equal '(take 1024) (read-shell "take 1kb")) :kb)
+  (check (equal '(take 1024) (read-shell "take 1k")) :k)
+  (check (equal '(take 1024) (read-shell "take 1KiB")) :case-insensitive)
+  (check (equal '(take 1048576) (read-shell "take 1mb")) :mb)
+  (check (equal '(take 1073741824) (read-shell "take 1gb")) :gb)
+  ;; A fractional size that lands on a whole number stays an integer.
+  (check (equal '(take 1536) (read-shell "take 1.5kb")) :fractional-size-is-an-integer)
+  ;; Durations are seconds, so they compose with GET-UNIVERSAL-TIME.
+  (check (equal '(take 60) (read-shell "take 1min")) :minutes-are-spelled-min)
+  (check (equal '(take 3600) (read-shell "take 1h")) :hours)
+  (check (equal '(take 86400) (read-shell "take 1d")) :days)
+  ;; The documented case: inside a block, where 1kb arrives as a symbol.
+  (check (equal '(where ($ (> (fld :size) 1024)))
+                (read-shell "where {(> .size 1kb)}"))
+         :suffix-inside-a-block)
+  ;; A word that merely starts with a digit is not a literal, so the CL symbols
+  ;; 1+ and 1- survive a block unharmed.
+  (check (null (plumb::suffixed-number "1+")) :one-plus-is-a-symbol)
+  (check (null (plumb::suffixed-number "x1k")) :must-start-with-a-numeral)
+  (check (equal '(take "9zz") (read-shell "take 9zz")) :unknown-suffix-stays-a-string))
 
 (defun test-reader-lisp-escape ()
   (check (equal '(list (ls) (xform #'identity) (take 2))
@@ -599,6 +621,7 @@ leaves it plain and the assertions can look for bare text."
                   test-reader-pipeline
                   test-reader-blocks
                   test-reader-variables-and-globs
+                  test-reader-suffix-literals
                   test-reader-lisp-escape
                   test-reader-pipes-do-not-split-everything
                   test-reader-runs
