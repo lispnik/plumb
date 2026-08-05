@@ -29,7 +29,14 @@ a producer runs at most this many objects ahead of its consumer.")
   ;; stage in a pipeline sends to.
   (producers 1 :type fixnum)
   (producer-closed nil)
-  (consumer-closed nil))
+  (consumer-closed nil)
+  ;; Instrumentation, for WATCH.  PASSED is a word so SEND can bump it with
+  ;; ATOMIC-INCF rather than taking the lock: an observer must not add
+  ;; contention to the path it is measuring.  LAST deliberately retains one
+  ;; object past its natural life -- CLOSE-INPUT drops it along with the
+  ;; buffer, for the same reason it drops the buffer.
+  (passed 0 :type sb-ext:word)
+  (last nil))
 
 (defun make-channel (&key name (capacity *default-capacity*) discard (producers 1))
   (%make-channel :name name :capacity capacity :discard discard :producers producers))
@@ -51,6 +58,7 @@ a producer runs at most this many objects ahead of its consumer.")
               (channel-tail ch) cell)
         (setf (channel-head ch) cell
               (channel-tail ch) cell))
+    (setf (channel-last ch) obj)
     (incf (channel-count ch))))
 
 (defun %deq (ch)
@@ -66,7 +74,11 @@ a producer runs at most this many objects ahead of its consumer.")
 (defun send (ch obj)
   "Put OBJ on CH, blocking while the channel is full.
 Signals CHANNEL-CLOSED if the consumer has gone away."
+  ;; Counted before the discard return, so a pipeline whose sink discards is
+  ;; still measurable -- that is the last stage, the one most worth seeing.
+  (sb-ext:atomic-incf (channel-passed ch))
   (when (channel-discard ch)
+    (setf (channel-last ch) obj)
     (return-from send obj))
   (sb-thread:with-mutex ((channel-lock ch))
     (loop
@@ -118,6 +130,7 @@ nothing is ever going to look at them again."
     (setf (channel-consumer-closed ch) t
           (channel-head ch) nil
           (channel-tail ch) nil
+          (channel-last ch) nil
           (channel-count ch) 0)
     (sb-thread:condition-broadcast (channel-not-full ch))
     (sb-thread:condition-broadcast (channel-not-empty ch)))

@@ -18,13 +18,25 @@
 (defvar *output-lock* (sb-thread:make-mutex :name "plumb-output")
   "Serialises writes to a shared stream.")
 
+(defvar *before-output* nil
+  "A function called holding *OUTPUT-LOCK* before anything is written to a
+shared stream, or NIL.
+
+WATCH is the only user, and needs exactly this: a panel drawn with cursor
+motion has to come down before other output scrolls past the place it is going
+to repaint.  A hook can be one line here only because WITH-OUTPUT-LOCK is
+already the single point every shared write funnels through -- the same
+property that made it the right place to serialise them.")
+
 (defmacro with-output-lock (&body body)
   "Hold *OUTPUT-LOCK* around a write.  A CL stream is not thread-safe, and with
 fan-out several stages print at once: two PRINT-ITEMS in parallel branches
 duplicate and drop each other's lines, differently on every run.  Locking per
 line keeps branches interleaved -- which is what a shell does -- but keeps each
 line whole.  Recursive, so a stage that presents inside a locked render is fine."
-  `(sb-thread:with-recursive-lock ((the sb-thread:mutex *output-lock*)) ,@body))
+  `(sb-thread:with-recursive-lock ((the sb-thread:mutex *output-lock*))
+     (when *before-output* (funcall *before-output*))
+     ,@body))
 
 (defgeneric present (object)
   (:documentation "OBJECT as a single line of text, for a human to read."))

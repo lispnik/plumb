@@ -350,6 +350,64 @@ a downstream `head` closing the pipe reaches the source through exactly the
 same backpressure `take` uses internally. Exit status: 0 ok, 1 evaluation or
 pipeline error, 2 usage error, 130 interrupt.
 
+## watch
+
+`explain` says what a pipeline *is*; `watch` says what it is **doing**. Same
+layout, live numbers:
+
+```
+$ plumb 'watch ls "/usr/share/**/*" | where {(eq .type :file)} | digest :md5 | tally'
+
+watching 4 stages
+  ls      pattern="/usr/share/**/*"                    1,066 objs  2.1k/s
+  │ ██████████ 64/64  last: P-ekans-X3_M-HRPN_V-m.txt@
+  where   pred=fn                                        966 objs  1.9k/s
+  │ ██████████ 64/64  last: BCM4388C2_EVTv3_PCIE.bin
+  digest  algorithm=:md5 external-format=:utf-8          900 objs  1.8k/s
+  │ ·········· 0/64   last: 7bbc2a37…  /usr/share/firmware/…
+  tally    ⋯ barrier                                       0 objs
+  │ ·········· 0/64
+```
+
+Read that top to bottom: two channels pinned at 64/64 in front of `digest`,
+which has emitted less than it received, and a barrier that has emitted
+nothing. The bottleneck is named, without a profiler.
+
+Everything shown comes off the channels themselves — `channel-count` against
+`channel-capacity` for occupancy, `channel-passed` for throughput,
+`channel-last` for the most recent object. `passed` is a `sb-ext:word` bumped
+with `atomic-incf` in `send`, so watching adds no lock to the hot path, and it
+is counted *before* the discard early-return so a pipeline whose sink discards
+is still measurable.
+
+Two forms. The word wraps the whole pipeline, the way `explain` does; the
+**stage** taps one point, the way `peek` does:
+
+```
+$ plumb 'watch ls "**/*" | where {(> .size 1mb)} | tally'    # every stage
+$ plumb 'ls "**/*" | watch | where {(> .size 1mb)} | tally'  # one point
+```
+
+Both register into one registry that a single watcher thread draws, so the two
+cannot drift apart. From Lisp they are `watch-pipeline` and `(watch)` — one
+name cannot be both a pipeline runner and a stage, and the surface syntax is
+the thing worth keeping uniform.
+
+The panel goes to **stderr**, repainted in place, so stdout stays exactly what
+it was:
+
+```
+$ plumb 'watch ls src/ | take 5' | wc -l        # 5 -- panel on the terminal
+$ plumb 'watch ls src/ | take 5' 2>/dev/null    # data only, no panel
+$ plumb 'watch ls src/ | take 5' > /dev/null    # panel only
+```
+
+Repainting and ordinary output cannot collide, because the panel takes itself
+down before anything else writes: `with-output-lock` is already the one place
+every shared-stream write funnels through, so a single hook there is the whole
+mechanism. When stderr is not a terminal there is no cursor motion at all —
+just one static block of totals at the end.
+
 ## Shape
 
 A **stage** is a closure with a type signature. It contains no concurrency at
@@ -747,6 +805,7 @@ completion all read that one package.
 | `src/crypto.lisp` | `digest` / `digests`, on Ironclad -- the `plumb/crypto` system |
 | `src/help.lisp` | `help`: the stage registry, listing and detail rendering |
 | `src/explain.lisp` | `explain`: pipeline metadata, drawn without running |
+| `src/watch.lisp` | `watch`: the same shape, live -- occupancy, throughput, last object |
 | `src/lineedit.lisp` | raw-mode line editor: emacs keys, history, prompts |
 | `src/cli.lisp` | the `plumb` executable: argument parsing, evaluation, REPL |
 | `build.lisp`, `Makefile` | `program-op` build of `bin/plumb` |

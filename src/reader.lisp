@@ -273,10 +273,17 @@ is something to evaluate."
         (and (numeric-token token) t)
         (and (suffixed-number token) t))))
 
-(defparameter +reserved-words+ '("explain")
+(defparameter +reserved-words+
+  '(("explain" . explain)
+    ("watch"   . watch-pipeline))
   "Words that wrap the whole pipeline rather than naming a stage, the way
 bash's `time` does.  A closed list of keywords -- not a general prefix
-mechanism, which would be the stage-position guessing we ruled out.")
+mechanism, which would be the stage-position guessing we ruled out.
+
+Word to function, not just a word, because `watch` is both: the word wraps a
+pipeline, and the *stage* WATCH taps a single point in one.  Two behaviours
+cannot share a name, and the surface syntax is the thing worth keeping
+uniform -- so the word maps to WATCH-PIPELINE and the stage keeps WATCH.")
 
 (defun shell-form (segments)
   (cond
@@ -328,9 +335,9 @@ whole pipeline the way a shell means it, not to the stage it sits beside."
   "READ-SHELL once redirections have been taken out of the token stream."
   (let ((segments (split-on-pipes (shell-tokens text))))
     (unless segments (return-from read-shell-1 nil))
-    (let ((head (first (first segments))))
-      (if (and (member head +reserved-words+ :test #'string-equal)
-               (or (rest segments) (rest (first segments))))
-          (list (read-lisp-token (string-downcase head))
+    (let* ((head (first (first segments)))
+           (reserved (cdr (assoc head +reserved-words+ :test #'string-equal))))
+      (if (and reserved (or (rest segments) (rest (first segments))))
+          (list reserved
                 (shell-form (cons (rest (first segments)) (rest segments))))
           (shell-form segments)))))

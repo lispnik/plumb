@@ -5,7 +5,8 @@
   (:nicknames #:pb)
   (:export
    ;; channels
-   #:channel #:make-channel #:channel-p
+   #:channel #:make-channel #:channel-p #:channel-passed #:channel-last
+   #:channel-count #:channel-capacity #:channel-name
    #:send #:recv #:close-output #:close-input
    #:channel-closed #:channel-closed-channel
    #:*default-capacity*
@@ -32,12 +33,15 @@
    #:command-failed-stderr #:emit-lines
    ;; help -- the registry's accessors stay internal; (help NAME) is the API
    #:help #:explain #:*stages* #:stage-info
+   ;; live view (src/watch.lisp)
+   #:watch #:watch-pipeline #:*watch-interval*
    ;; word-mode reader (src/reader.lisp)
    #:read-shell #:shell-syntax-p #:shell-tokens
    ;; presentation (src/present.lisp)
    #:present #:render-table #:table-columns #:with-output-lock #:*output-lock*
+   #:*before-output*
    ;; terminal colour (src/ansi.lisp)
-   #:+esc+ #:*color* #:color-p #:paint #:visible-width
+   #:+esc+ #:*color* #:color-p #:paint #:visible-width #:terminal-width
    ;; misc
    ;; COPY-* are the escape hatch TEE documents: copying is a stage.
    #:file-entry #:make-file-entry #:copy-file-entry #:file-entry-path #:file-entry-name
@@ -68,14 +72,15 @@
   (:documentation "Emacs-key line editing for the REPL.  See src/lineedit.lisp.")
   ;; Colour lives in the core; re-exported here so PLE:PAINT and PLUMB:PAINT
   ;; are the same symbol rather than two implementations.
-  (:import-from #:plumb #:+esc+ #:*color* #:color-p #:paint #:visible-width)
+  (:import-from #:plumb #:+esc+ #:*color* #:color-p #:paint #:visible-width
+                #:terminal-width)
   (:export
    #:read-line-edited #:tty-p
    #:*prompt* #:*continuation-prompt* #:prompt-text
    #:*history* #:*history-limit* #:add-history
    #:*history-file* #:load-history #:append-history
    #:*completer* #:complete
-   #:*color* #:color-p #:paint #:visible-width))
+   #:*color* #:color-p #:paint #:visible-width #:terminal-width))
 
 (defpackage #:plumb.cli
   (:use #:cl)

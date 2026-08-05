@@ -59,43 +59,6 @@
             (read-char-no-hang *standard-input* nil nil))
           (read-char *standard-input* nil nil))))
 
-;;; Terminal width.
-;;;
-;;; The obvious trick -- drive the cursor far right and ask where it landed
-;;; with ESC[6n -- is wrong here.  The reply arrives on standard input, mixed
-;;; in with whatever the user has already typed, so parsing it eats type-ahead;
-;;; and a terminal that never answers eats a keystroke per line instead.  STTY
-;;; reads the kernel's window size directly and cannot touch the input queue.
-;;; The answer is cached and invalidated by SIGWINCH, so this is one subprocess
-;;; per resize rather than one per line.
-
-(defvar *columns* nil "Cached terminal width; NIL means ask again.")
-(defvar *watching-resize* nil)
-
-(defun query-columns ()
-  (ignore-errors
-   (let* ((out (with-output-to-string (s)
-                 (sb-ext:run-program "/bin/stty" '("size")
-                                     :input t :output s :search nil)))
-          (space (position #\Space out)))
-     (when space
-       (let ((cols (parse-integer out :start (1+ space) :junk-allowed t)))
-         ;; A pty with no window size reports 0; so does a very odd terminal.
-         (when (and cols (>= cols 20)) cols))))))
-
-(defun watch-for-resize ()
-  (unless *watching-resize*
-    (setf *watching-resize* t)
-    (ignore-errors
-     (sb-sys:enable-interrupt sb-posix:sigwinch
-                              (lambda (&rest args)
-                                (declare (ignore args))
-                                (setf *columns* nil))))))
-
-(defun terminal-width (&optional (default 80))
-  (watch-for-resize)
-  (or *columns* (setf *columns* (query-columns)) default))
-
 ;;; ------------------------------------------------------------ key decoding
 
 (defun decode-csi ()

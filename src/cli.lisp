@@ -261,6 +261,27 @@ the newline, but an unclosed { or ( inside one still asks for another line."
       (unless (guarded (lambda () (eval-and-present form quiet)))
         (setf ok nil)))))
 
+(defun eval-forms-interruptibly (forms quiet)
+  "^C abandons the pipeline, not the session.
+
+Interrupting is handled here rather than only in MAIN, which exits 130.  That
+is right for `plumb 'expr'`, where ^C means stop this command -- and wrong at a
+prompt, where it means stop this command and give me the prompt back; there it
+took the whole session down with it.
+
+Unwinding is all the teardown this needs.  The condition passes through EACH's
+UNWIND-PROTECT, which closes the sink; the upstream SEND then signals
+CHANNEL-CLOSED and the cascade takes the stages down backwards -- the same path
+a downstream TAKE uses, and the same one WATCH's UNWIND-PROTECT relies on to
+stop repainting."
+  (handler-case (eval-forms-reporting forms quiet)
+    (sb-sys:interactive-interrupt ()
+      (fresh-line *error-output*)
+      (format *error-output* "~a interrupted~%"
+              (let ((*standard-output* *error-output*)) (ple:paint "plumb:" :red :bold)))
+      (force-output *error-output*)
+      nil)))
+
 (defun repl-loop (read-a-line quiet)
   "The REPL, once.  READ-A-LINE takes a prompt designator and returns
 (VALUES LINE STATUS) with STATUS :LINE, :EOF or :INTERRUPT -- the only thing
@@ -292,7 +313,7 @@ diverged once, when the plain path read Lisp straight off the stream."
                 (setf pending "")
                 (when result
                   (incf *input-number*)
-                  (setf *last-ok* (eval-forms-reporting result quiet))))))))))))
+                  (setf *last-ok* (eval-forms-interruptibly result quiet))))))))))))
 
 (defun edited-repl (quiet)
   ;; Persist only for a real session.  A piped `plumb -i` is a script, and a

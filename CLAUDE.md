@@ -46,6 +46,22 @@ make crypto && make test-crypto            ; the optional Ironclad system
   thread and does not inherit the caller's `*print-pretty*`, so each printer
   used to rediscover this separately — and drift. Give a type a `present`
   method rather than special-casing it at a print site.
+- **Watching is lock-free, and `last` retains an object on purpose.**
+  `channel-passed` is a `sb-ext:word` bumped with `atomic-incf` in `send`, so an
+  observer adds no contention to the path it measures; it counts *before* the
+  discard early-return, so a discarding sink is still measurable. `channel-last`
+  deliberately holds one object past its natural life, and `close-input` drops
+  it with the buffer for the same reason it drops the buffer. Neither is dead
+  code to tidy away.
+- **`with-output-lock` is where the panel comes down.** `*before-output*` runs
+  holding the lock, before any shared-stream write. A repainting panel and
+  ordinary output would otherwise scroll over each other; a hook can be one line
+  only because that macro is already the single funnel for shared writes.
+- **`sb-sys:interactive-interrupt` is a `serious-condition`, not an `error`.**
+  This is load-bearing: `guarded`'s `(error (c) ...)` clause does *not* catch
+  it, which is why ^C reaches `eval-forms-interruptibly` in the REPL and `main`
+  in one-shot mode. Widening either handler to `serious-condition` would put ^C
+  back to killing the session.
 - **A shared stream needs `with-output-lock`.** A CL stream is not thread-safe
   and fan-out lets several stages print at once; without it two branches
   duplicate and drop each other's lines, differently on every run. Per line for
@@ -108,7 +124,11 @@ make crypto && make test-crypto            ; the optional Ironclad system
 4. Anything that opens a file must refuse a FIFO first. Opening one with no
    writer blocks forever and no downstream stage can time it out; this bit `ls`
    once and `digest` would have inherited it.
-5. `make build` and `make crypto` write the same path, so **nothing may quietly
+5. ^C must abandon the pipeline, not the session. `main` exits 130, which is
+   right for `plumb 'expr'` and wrong at a prompt; `eval-forms-interruptibly`
+   is what makes the REPL survive it, and unwinding through `each`'s
+   `unwind-protect` is all the teardown it needs.
+6. `make build` and `make crypto` write the same path, so **nothing may quietly
    pick a flavour**. Each drops a marker under `bin/` and deletes the other's,
    and each removes `bin/plumb` first, because `program-op` skips the dump when
    its output is newer than its inputs and would otherwise report success over

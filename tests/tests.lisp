@@ -22,6 +22,13 @@
        (sb-ext:with-timeout ,seconds ,@body)
      (sb-ext:timeout () (push (list ,label :TIMED-OUT) *failed*) :timeout)))
 
+(defun split-lines (text)
+  (let ((lines '()) (start 0))
+    (loop for pos = (position #\Newline text :start start)
+          do (push (subseq text start (or pos (length text))) lines)
+             (if pos (setf start (1+ pos)) (return)))
+    (remove "" (nreverse lines) :test #'string=)))
+
 (defmacro help-output (&body body)
   "Capture what a command prints.  A string stream is not interactive, so PAINT
 leaves it plain and the assertions can look for bare text."
@@ -1215,12 +1222,136 @@ return the resulting text and point."
                     (join (run (list (from-list rows) (print-items :stream s))))))))
       (check (= 2 (count #\Newline out)) :one-line-per-object))))
 
+;;; -------------------------------------------------------------------- watch
+
+(defun test-channel-counters ()
+  "PASSED is what the whole live view is built on, so it has to be exactly the
+number of objects that crossed -- checked against a TALLY of the same stream
+rather than against itself."
+  (with-timeout (15 :channel-counters)
+    (let* ((sink (make-channel :capacity 8))
+           (pipe (run (list (counter :limit 50) (where (lambda (n) (evenp n))))
+                      :sink sink))
+           (seen 0))
+      (loop (multiple-value-bind (x ok) (recv sink)
+              (declare (ignore x))
+              (unless ok (return))
+              (incf seen)))
+      (join pipe)
+      (check (= 25 seen) :half-the-integers-arrived)
+      (check (= 25 (channel-passed sink)) :sink-passed-matches-the-tally)
+      ;; The channel between COUNTER and WHERE saw all 50.
+      (check (= 50 (channel-passed (first (pipeline-channels pipe))))
+             :upstream-passed-counts-everything))
+    ;; A discard sink still counts: SEND increments before returning early,
+    ;; which is what makes the last stage of a plain pipeline measurable.
+    (let ((pipe (run (list (counter :limit 7) (print-items :stream (make-broadcast-stream))))))
+      (join pipe)
+      (check (= 7 (channel-passed (first (pipeline-channels pipe))))
+             :counted-into-a-sink))))
+
+(defun test-channel-last-is-dropped-with-the-buffer ()
+  "LAST retains one object past its natural life on purpose.  CLOSE-INPUT drops
+the buffer so a dead channel pins nothing; LAST has to go the same way."
+  (let ((ch (make-channel :capacity 4)))
+    (send ch :a)
+    (check (eq :a (channel-last ch)) :last-records-the-most-recent)
+    (send ch :b)
+    (check (eq :b (channel-last ch)) :last-updates)
+    (close-input ch)
+    (check (null (channel-last ch)) :close-input-clears-last)))
+
+(defun watch-panel (stages)
+  "Run STAGES watched, returning (VALUES stdout panel)."
+  (let* ((panel (make-string-output-stream))
+         (out (with-output-to-string (*standard-output*)
+                (watch-pipeline stages :interval 0.05 :stream panel))))
+    (values out (get-output-stream-string panel))))
+
+(defun test-watch-pipeline ()
+  "The pipeline form: objects to stdout, the panel to its own stream."
+  (with-timeout (20 :watch-pipeline)
+    (multiple-value-bind (out panel) (watch-panel (list (counter :limit 4) (take 3)))
+      ;; Objects are printed exactly as they are without WATCH -- one per line,
+      ;; so `watch ... | wc -l` is still the count.
+      (check (equal '("0" "1" "2") (split-lines out)) :stdout-is-untouched)
+      (check (search "counter" panel) :panel-names-the-stages)
+      (check (search "take" panel) :panel-names-every-stage)
+      (check (search "obj" panel) :panel-shows-throughput))))
+
+(defun test-watch-leaves-nothing-behind ()
+  "The hook, the refcount and the registry must all come back to rest, or the
+next unwatched command pays for a panel nobody asked for."
+  (with-timeout (20 :watch-cleanup)
+    (watch-panel (list (counter :limit 3)))
+    (check (null plumb::*before-output*) :output-hook-cleared)
+    (check (zerop plumb::*watchers*) :watcher-refcount-back-to-zero)
+    (check (null plumb::*watch-points*) :registry-emptied)
+    (check (null plumb::*watcher-thread*) :watcher-thread-joined)
+    ;; And after a pipeline that dies, since that is when it matters.
+    (let ((panel (make-string-output-stream)))
+      (ignore-errors
+       (watch-pipeline (list (counter :limit 5)
+                             (xform (lambda (n) (error "boom ~a" n))))
+                       :interval 0.05 :stream panel))
+      (check (null plumb::*before-output*) :hook-cleared-after-a-failure)
+      (check (zerop plumb::*watchers*) :refcount-cleared-after-a-failure)
+      (check (null plumb::*watch-points*) :registry-emptied-after-a-failure))))
+
+(defun test-watch-stage-is-a-tap ()
+  "The stage form passes everything through unchanged, like PEEK."
+  (with-timeout (20 :watch-stage)
+    (let* ((panel (make-string-output-stream))
+           (result (collect-pipeline (list (counter :limit 5)
+                                           (watch :label "mid" :interval 0.05
+                                                  :stream panel)
+                                           (where (lambda (n) (oddp n)))))))
+      (check (equal '(1 3) result) :stream-passes-through-untouched)
+      (check (search "mid" (get-output-stream-string panel)) :panel-uses-the-label))
+    (check (zerop plumb::*watchers*) :tap-cleans-up)))
+
+(defun test-watch-reads-as-a-reserved-word ()
+  "`watch` wraps the whole pipeline, the way `explain` does -- but maps to
+WATCH-PIPELINE, because the bare symbol WATCH is the tap stage."
+  (check (equal '(watch-pipeline (list (ls) (take 5))) (read-shell "watch ls | take 5"))
+         :watch-wraps-the-pipeline)
+  (check (equal '(list (ls) (watch) (take 5)) (read-shell "ls | watch | take 5"))
+         :watch-in-the-middle-is-the-stage)
+  (check (equal '(ls "watch") (read-shell "ls watch")) :not-reserved-as-an-argument)
+  ;; The word EXPLAIN must keep mapping to itself.
+  (check (equal '(explain (list (ls) (take 5))) (read-shell "explain ls | take 5"))
+         :explain-still-maps-to-itself))
+
+(defun test-interrupt-abandons-the-pipeline-not-the-session ()
+  "^C at a prompt has to come back to the prompt.  MAIN handles
+INTERACTIVE-INTERRUPT by exiting 130, which is right for `plumb 'expr'` and
+wrong here; this is the handler that makes the REPL survive it."
+  (let ((reported (with-output-to-string (*error-output*)
+                    (check (null (plumb.cli::eval-forms-interruptibly
+                                  (list '(error 'sb-sys:interactive-interrupt))
+                                  nil))
+                           :interrupt-is-caught-and-reported-as-failure))))
+    (check (search "interrupted" reported) :interrupt-says-so-on-stderr))
+  ;; An ordinary error still goes through the normal path.
+  (let ((reported (with-output-to-string (*error-output*)
+                    (plumb.cli::eval-forms-interruptibly (list '(error "ordinary")) nil))))
+    (check (search "ordinary" reported) :other-errors-still-reported)))
+
+
 ;;; --------------------------------------------------------------------- help
 
 (defun stage-named (name) (gethash name plumb::*stages*))
 
 (defun test-help-registry ()
-  (check (= 23 (hash-table-count plumb::*stages*)) :every-stage-registered)
+  ;; The property, not a census: this asserted (= 23 ...) and adding a stage
+  ;; failed a test about HELP.  What matters is that DEFSTAGE registers every
+  ;; stage it defines, and that each entry names a real constructor.
+  (check (loop for name being the hash-keys of plumb::*stages*
+               always (fboundp name))
+         :every-registered-stage-is-callable)
+  (check (loop for name in '(counter ls where take sort-by table print-items)
+               always (stage-named name))
+         :defstage-registers-what-it-defines)
   (check (eq :source (plumb::stage-kind (stage-named 'counter))) :counter-is-a-source)
   (check (eq :transform (plumb::stage-kind (stage-named 'where))) :where-is-a-transform)
   (check (eq :sink (plumb::stage-kind (stage-named 'print-items))) :print-items-is-a-sink)
@@ -1351,6 +1482,13 @@ return the resulting text and point."
                   test-visible-width-ignores-colour
                   test-incremental-read
                   test-sink-prints-one-line-per-object
+                  test-channel-counters
+                  test-channel-last-is-dropped-with-the-buffer
+                  test-watch-pipeline
+                  test-watch-leaves-nothing-behind
+                  test-watch-stage-is-a-tap
+                  test-watch-reads-as-a-reserved-word
+                  test-interrupt-abandons-the-pipeline-not-the-session
                   test-help-registry
                   test-help-listing
                   test-help-detail

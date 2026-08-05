@@ -26,6 +26,7 @@
                (:file "stages")
                (:file "process")
                (:file "explain")
+               (:file "watch")
                (:file "help"))
   :in-order-to ((test-op (test-op "plumb/tests"))))
 
