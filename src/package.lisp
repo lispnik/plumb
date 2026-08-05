@@ -22,7 +22,7 @@
    ;; built-in stages
    #:from-list #:counter #:ls #:lines #:sh #:to-sh #:glob
    #:where #:xform #:take #:drop #:uniq #:sort-by #:tally #:accumulate
-   #:peek #:to-text #:print-items #:table
+   #:peek #:to-text #:print-items #:table #:to-file #:from-file
    ;; external processes
    #:command-failed #:command-failed-command #:command-failed-exit-code
    #:command-failed-stderr #:emit-lines
@@ -53,6 +53,8 @@
    #:read-line-edited #:tty-p
    #:*prompt* #:*continuation-prompt* #:prompt-text
    #:*history* #:*history-limit* #:add-history
+   #:*history-file* #:load-history #:append-history
+   #:*completer* #:complete
    #:*color* #:color-p #:paint #:visible-width))
 
 (defpackage #:plumb.cli

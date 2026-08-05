@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 183 assertions
+(asdf:test-system "plumb")     ; 201 assertions
 ```
 
 ```
@@ -48,6 +48,7 @@ $ plumb -i                                  # or just `plumb` on a terminal
 | `*x*`, `+x+` | a variable, not a string — so globs like `*.lisp` stay strings |
 | `:desc` | a trailing keyword is a flag, so it means `:desc t` |
 | `(...)`, `#'f` | Lisp, verbatim — as a whole stage or as one argument |
+| `> f` `>> f` `< f` | redirection; binds to the whole pipeline, as a shell means it |
 | number | `5`, or a suffixed literal — `1kb` `2mb` `1.5gb`, `30s` `5min` `2h` `1d` |
 
 Sizes are **binary** — `1kb` is 1024, the way `ls -h` and `du -h` mean it —
@@ -114,6 +115,18 @@ ls src/ | where {(> .size 1024)} | sort-by .size :desc | take 5
       (sort-by ($ (fld :size)) :desc t) (take 5))
 ```
 
+Redirection binds to the whole pipeline rather than the stage beside it:
+
+```
+ls src/*.lisp | xform .name > names.txt      # (to-file "names.txt")
+counter :limit 3 >> log.txt                  # :if-exists :append
+< names.txt | where {(search "cli" .text)}    # (from-file "names.txt")
+```
+
+`>` and `<` end a word, so `ls >out.txt` splits without spaces. A `>` inside a
+block still means greater-than — blocks are scanned whole, so the redirection
+pass never sees inside one.
+
 There is deliberately **no fallback to an external command** — an unknown first
 word is an error, not an exec, so a typo'd stage name says so. Use `sh`.
 
@@ -130,6 +143,7 @@ shell too.
 | edit | `DEL` `C-d` `C-h` `C-t` `C-k` `C-u` `C-w` `M-d` `M-DEL` `C-y` `C-g` |
 | case | `M-u` `M-l` `M-c` |
 | history | `C-p` `C-n`, up/down, `M-<` `M->` |
+| complete | `TAB` — stage names, operators and variables |
 | other | `C-l` clear, `C-c` abandon the line, `C-d` on an empty line exits |
 
 Word motion is symbol-aware, so `M-b` steps over `*default-capacity*` in one
@@ -144,6 +158,17 @@ marker that turns red when the last form failed:
 (setf ple:*prompt* "λ ")                          ; a string
 (setf ple:*prompt* (lambda () (format nil "~a> " (length ple:*history*))))
 ```
+
+`TAB` completes: a single candidate is inserted outright, several reduce to
+their common prefix, and `TAB` again lists them. Candidates come from the same
+two places `help` reads — the stage registry and the package's export list — so
+completion cannot drift out of step with the documentation.
+
+History persists to `~/.plumb_history` (`ple:*history-file*`, `nil` to disable).
+It is **appended** rather than rewritten at exit, so a crash keeps what you
+typed and two sessions interleave instead of clobbering each other; the file is
+trimmed on load once it grows past twice `*history-limit*`. A piped `plumb -i`
+is a script, so it does not write to it.
 
 Colour follows `NO_COLOR`, `TERM=dumb`, and whether output is a terminal, so
 piped output stays clean. `--no-edit` falls back to plain input.

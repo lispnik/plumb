@@ -209,6 +209,23 @@ hits EOF, which the type signature does not say and does not need to."
     (write-line (present x) stream)
     (force-output stream)))
 
+(defstage to-file ((path (or string pathname)) &key (if-exists :supersede))
+  "Write each object to PATH, one line each.  A sink; what > and >> expand to.
+WITH-OPEN-FILE is the teardown story -- an upstream error or a downstream close
+unwinds through it and the file is closed either way."
+  (:consumes t) (:produces nil)
+  (with-open-file (out path :direction :output
+                            :if-exists if-exists :if-does-not-exist :create)
+    (do-input (x)
+      (write-line (present x) out))))
+
+(defstage from-file ((path (or string pathname)))
+  "Emit a LINE per line of PATH.  A source; what < expands to.  Opening the
+stream here rather than taking one means it is closed on every exit path."
+  (:consumes nil) (:produces :objects)
+  (with-open-file (in path)
+    (emit-lines in path)))
+
 (defstage table (&key columns (stream *standard-output*) (max-width 40))
   "Buffer the whole stream, then print it as an aligned table.  A barrier, like
 SORT-BY and for the same reason: a column cannot be sized until the last row

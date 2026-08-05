@@ -142,9 +142,45 @@ NIL at end of input."
 ;;; ------------------------------------------------------------------ history
 
 (defvar *history* (make-array 0 :adjustable t :fill-pointer 0)
-  "Accepted lines, oldest first.  In memory only -- nothing is written to disk.")
+  "Accepted lines, oldest first.  Persisted to *HISTORY-FILE*.")
 
 (defvar *history-limit* 500)
+
+(defvar *history-file*
+  (merge-pathnames ".plumb_history" (user-homedir-pathname))
+  "Where history persists between sessions.  NIL disables persistence.")
+
+(defun load-history (&optional (path *history-file*))
+  "Fill *HISTORY* from PATH, keeping the most recent *HISTORY-LIMIT* lines.
+Rewrites the file when it has grown well past the limit, so an append-only log
+cannot grow without bound.  A missing or unreadable file is not an error --
+losing history is never worth failing to start over."
+  (when path
+    (ignore-errors
+     (let ((lines (with-open-file (in path :if-does-not-exist nil)
+                    (when in
+                      (loop for line = (read-line in nil nil)
+                            while line
+                            unless (string= line "") collect line)))))
+       (when lines
+         (let ((recent (last lines *history-limit*)))
+           (setf (fill-pointer *history*) 0)
+           (dolist (line recent) (vector-push-extend line *history*))
+           (when (> (length lines) (* 2 *history-limit*))
+             (with-open-file (out path :direction :output :if-exists :supersede
+                                       :if-does-not-exist :create)
+               (dolist (line recent) (write-line line out))))))))
+    (length *history*)))
+
+(defun append-history (line &optional (path *history-file*))
+  "Append one accepted line.  Appending rather than rewriting at exit means a
+crash keeps the history, and two sessions interleave instead of clobbering."
+  (when (and path (plusp (length line)))
+    (ignore-errors
+     (with-open-file (out path :direction :output :if-exists :append
+                               :if-does-not-exist :create)
+       (write-line line out))))
+  line)
 
 (defun add-history (line)
   "Record LINE unless it is blank or repeats the previous entry.
@@ -159,10 +195,28 @@ literal does not survive the round trip."
                 (and (plusp (fill-pointer *history*))
                      (string= line (aref *history* (1- (fill-pointer *history*))))))
       (vector-push-extend line *history*)
+      (append-history line)
       (when (> (fill-pointer *history*) *history-limit*)
         (replace *history* *history* :start2 1)
         (decf (fill-pointer *history*)))))
   line)
+
+;;; --------------------------------------------------------------- completion
+
+(defvar *completer* nil
+  "A function of one argument -- the word before point -- returning the strings
+it could be completed to.  NIL leaves TAB inserting whitespace.  The editor
+deliberately knows nothing about what is being completed; the CLI installs one
+that knows about stages.")
+
+(defun common-prefix (strings)
+  (if (null (rest strings))
+      (first strings)
+      (let ((end (reduce #'min strings :key #'length)))
+        (dotimes (i end (subseq (first strings) 0 end))
+          (unless (every (lambda (s) (char-equal (char (first strings) i) (char s i)))
+                         strings)
+            (return (subseq (first strings) 0 i)))))))
 
 ;;; ------------------------------------------------------------------- editor
 
@@ -364,7 +418,7 @@ call works under a pipe."
                (6  (setf (ed-point ed) (min (ed-length ed) (1+ (ed-point ed))))) ; C-f
                (7  (ed-replace-all ed ""))                                    ; C-g
                ((8 127) (ed-delete ed (1- (ed-point ed)) (ed-point ed)))      ; C-h, DEL
-               (9  (ed-insert ed "  "))                                       ; TAB
+               (9  (complete ed))                                             ; TAB
                ((10 13) (done :line))                                         ; C-j, RET
                (11 (ed-delete ed (ed-point ed) (ed-length ed) :kill t))       ; C-k
                (12 (format *standard-output* "~c[H~c[2J" +esc+ +esc+))        ; C-l
@@ -385,3 +439,37 @@ call works under a pipe."
                     ;; Typing leaves the history and edits the live line.
                     (setf (ed-index ed) nil))))))
           (redisplay ed))))))
+
+;;; TAB.  Defined after the editor because it needs WORD-CHAR-P and the ED-
+;;; accessors; called from %EDIT's dispatch above.
+
+(defun word-before-point (ed)
+  "The word TAB should complete, and where it starts."
+  (let ((start (ed-point ed)) (text (ed-text ed)))
+    (loop while (and (plusp start) (word-char-p (char text (1- start))))
+          do (decf start))
+    (values (subseq text start (ed-point ed)) start)))
+
+(defun complete (ed)
+  "With no completer, TAB indents -- that is the only thing left to mean.  With
+one: a single candidate is inserted outright, several are reduced to their
+common prefix, and TAB again lists them, which is the readline bargain."
+  (if (null *completer*)
+      (ed-insert ed "  ")
+      (multiple-value-bind (word start) (word-before-point ed)
+        (let ((candidates (sort (copy-list (funcall *completer* word)) #'string<)))
+          (cond
+            ((null candidates))         ; nothing matches: leave the line alone
+            ((null (rest candidates))
+             (ed-delete ed start (ed-point ed))
+             (ed-insert ed (concatenate 'string (first candidates) " ")))
+            (t
+             (let ((prefix (common-prefix candidates)))
+               (if (> (length prefix) (length word))
+                   (progn (ed-delete ed start (ed-point ed))
+                          (ed-insert ed prefix))
+                   ;; No more common text to give, so show the choices.  The
+                   ;; redisplay that follows every key repaints the prompt.
+                   (progn (terpri *standard-output*)
+                          (plumb::write-wrapped candidates *standard-output*)))))))))
+  (values))

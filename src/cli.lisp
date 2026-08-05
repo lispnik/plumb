@@ -200,6 +200,23 @@ decides, per PLUMB:SHELL-SYNTAX-P -- see CLAUDE.md open work 5."
 (defun continuation-prompt ()
   (ple:paint "... " :grey))
 
+(defun plumb-completions (prefix)
+  "Everything PLUMB names, for TAB.  Stage names are the common case, but the
+operators and variables are worth completing too -- and the registry and the
+export list are already the two things HELP reads, so this stays in step with
+HELP for free."
+  (let ((names '()))
+    (maphash (lambda (name info)
+               (declare (ignore info))
+               (push (string-downcase (symbol-name name)) names))
+             plumb:*stages*)
+    (do-external-symbols (symbol '#:plumb)
+      (push (string-downcase (symbol-name symbol)) names))
+    (remove-if-not (lambda (name) (eql 0 (search prefix name :test #'char-equal)))
+                   (remove-duplicates names :test #'string=))))
+
+(setf ple:*completer* 'plumb-completions)
+
 (setf ple:*prompt* 'plumb-prompt
       ple:*continuation-prompt* 'continuation-prompt)
 
@@ -267,18 +284,22 @@ diverged once, when the plain path read Lisp straight off the stream."
                   (setf *last-ok* (eval-forms-reporting result quiet))))))))))))
 
 (defun edited-repl (quiet)
+  ;; Persist only for a real session.  A piped `plumb -i` is a script, and a
+  ;; script has no business appending to the user's history.
+  (ple:load-history)
   (repl-loop (lambda (prompt) (ple:read-line-edited :prompt prompt)) quiet))
 
 (defun plain-repl (quiet)
   "No terminal, or --no-edit.  Same prompt and the same reader as the edited
 path -- customising *PROMPT* should not stop working just because the terminal
 is not one, and neither should word mode."
-  (repl-loop (lambda (prompt)
+  (let ((ple:*history-file* nil))       ; see EDITED-REPL
+    (repl-loop (lambda (prompt)
                (format t "~&~a" (ple:prompt-text prompt))
                (force-output)
                (let ((line (read-line *standard-input* nil nil)))
                  (if line (values line :line) (values "" :eof))))
-             quiet))
+             quiet)))
 
 (defun repl (&optional quiet)
   "Also the entry point for `make repl`, so it binds *PACKAGE* itself rather

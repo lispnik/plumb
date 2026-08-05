@@ -50,8 +50,11 @@ skipped whole -- both delimiters and pipes can legally appear in a string."
     (values (subseq text start i) i)))
 
 (defun word-boundary-p (c)
+  ;; > and < end a word so `ls >out.txt` splits.  A > inside a block or a Lisp
+  ;; form is safe: those are scanned whole before this ever sees them, which is
+  ;; why {(> .size 1kb)} is unaffected.
   (or (member c '(#\Space #\Tab #\Newline #\|))
-      (member c '(#\{ #\( #\"))))
+      (member c '(#\{ #\( #\" #\> #\<))))
 
 (defun scan-word-token (text start)
   (let ((i start) (n (length text)))
@@ -68,6 +71,11 @@ separate first pass: blocks, forms and strings may all contain one."
                (cond
                  ((member c '(#\Space #\Tab #\Newline)) (incf i))
                  ((char= c #\|) (push "|" tokens) (incf i))
+                 ((char= c #\<) (push "<" tokens) (incf i))
+                 ((char= c #\>)
+                  (let ((append-p (and (< (1+ i) n) (char= (char text (1+ i)) #\>))))
+                    (push (if append-p ">>" ">") tokens)
+                    (incf i (if append-p 2 1))))
                  ((char= c #\")
                   (multiple-value-bind (tok j) (scan-string-token text i)
                     (push tok tokens) (setf i j)))
@@ -262,10 +270,42 @@ mechanism, which would be the stage-position guessing we ruled out.")
       ;; would turn that into a printed NIL.
       (t (segment-form (first segments)))))
 
+(defun redirection-p (token) (member token '(">" ">>" "<") :test #'string=))
+
+(defun take-redirections (tokens)
+  "Strip > >> and < with their targets.  Returns the remaining tokens, the
+output form (or NIL) and the input form (or NIL).  Redirection binds to the
+whole pipeline the way a shell means it, not to the stage it sits beside."
+  (let ((kept '()) (output nil) (input nil))
+    (loop while tokens
+          for token = (pop tokens)
+          do (cond
+               ((redirection-p token)
+                (let ((target (pop tokens)))
+                  (unless target
+                    (error "~a needs a filename after it." token))
+                  (let ((path (token-form target)))
+                    (cond ((string= token "<") (setf input `(from-file ,path)))
+                          ((string= token ">") (setf output `(to-file ,path)))
+                          (t (setf output `(to-file ,path :if-exists :append)))))))
+               (t (push token kept))))
+    (values (nreverse kept) output input)))
+
 (defun read-shell (text)
   "Word-mode TEXT as a Lisp form."
+  (multiple-value-bind (tokens output input) (take-redirections (shell-tokens text))
+    (when (or output input)
+      (let ((segments (split-on-pipes tokens)))
+        (return-from read-shell
+          (cons 'list (append (when input (list input))
+                              (mapcar #'segment-form segments)
+                              (when output (list output)))))))
+    (read-shell-1 text)))
+
+(defun read-shell-1 (text)
+  "READ-SHELL once redirections have been taken out of the token stream."
   (let ((segments (split-on-pipes (shell-tokens text))))
-    (unless segments (return-from read-shell nil))
+    (unless segments (return-from read-shell-1 nil))
     (let ((head (first (first segments))))
       (if (and (member head +reserved-words+ :test #'string-equal)
                (or (rest segments) (rest (first segments))))

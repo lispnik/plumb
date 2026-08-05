@@ -33,7 +33,12 @@
 (defvar *pipeline* nil "The pipeline the current stage thread belongs to.")
 
 (defun %compatible-p (produced consumed)
-  (or (eq produced t) (eq consumed t) (eql produced consumed)))
+  "Can these two be joined?  NIL on the producing side means `produces nothing',
+which nothing may follow -- T on the consuming side means any object *type*,
+not the absence of one.  Reading it as the latter let a sink follow a sink,
+and EXPLAIN reported that pipeline as fine."
+  (and produced consumed
+       (or (eq produced t) (eq consumed t) (eql produced consumed))))
 
 (defun check-pipeline (stages)
   "Validate a pipeline before a single thread is spawned.  A mismatch here is a

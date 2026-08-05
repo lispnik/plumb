@@ -227,6 +227,82 @@ leaves it plain and the assertions can look for bare text."
     (let ((got (names (glob "src/*.lisp"))))
       (check (equal got (sort (copy-list got) #'string<)) :results-are-sorted))))
 
+(defun test-sink-ends-the-pipeline ()
+  "T on the consuming side means any object *type*, not the absence of one.
+Reading it as the latter let a sink follow a sink, and EXPLAIN said fine."
+  (check (handler-case
+             (progn (check-pipeline (list (counter :limit 1) (print-items) (print-items)))
+                    nil)
+           (pipeline-type-error () t))
+         :nothing-may-follow-a-sink)
+  ;; ...but a sink still accepts whatever is upstream, including :BYTES.
+  (check (check-pipeline (list (from-list '(1)) (to-text) (print-items)))
+         :a-sink-still-consumes-anything))
+
+(defun test-redirection ()
+  (let ((path "/tmp/plumb-redirect-test.txt"))
+    (ignore-errors (delete-file path))
+    (with-timeout (10 :redirection)
+      ;; > and >> bind to the whole pipeline, the way a shell means them.
+      (check (equal `(list (counter :limit 2) (to-file ,path))
+                    (read-shell (format nil "counter :limit 2 > ~a" path)))
+             :output-redirection)
+      (check (equal `(list (counter :limit 2) (to-file ,path :if-exists :append))
+                    (read-shell (format nil "counter :limit 2 >> ~a" path)))
+             :append-redirection)
+      (check (equal `(list (from-file ,path) (take 1))
+                    (read-shell (format nil "< ~a | take 1" path)))
+             :input-redirection)
+      ;; A > inside a block is greater-than: blocks are scanned whole, so the
+      ;; redirection pass never sees inside one.
+      (check (equal '(where ($ (> (fld :size) 1024)))
+                    (read-shell "where {(> .size 1kb)}"))
+             :greater-than-inside-a-block-survives)
+      ;; End to end.
+      (join (run (eval (read-shell (format nil "counter :limit 3 > ~a" path)))))
+      (check (equal '("0" "1" "2")
+                    (mapcar #'line-text (collect-pipeline (list (from-file path)))))
+             :round-trip)
+      (join (run (eval (read-shell (format nil "counter :limit 1 >> ~a" path)))))
+      (check (= 4 (length (collect-pipeline (list (from-file path))))) :append-appends)
+      (ignore-errors (delete-file path)))))
+
+(defun test-history-persists ()
+  (let ((path "/tmp/plumb-history-test.txt"))
+    (ignore-errors (delete-file path))
+    (let ((ple:*history-file* path)
+          (ple:*history* (make-array 0 :adjustable t :fill-pointer 0)))
+      (ple:add-history "(+ 1 2)")
+      (ple:add-history "ls | take 3")
+      ;; A new session starts from an empty vector and reads the file back.
+      (setf (fill-pointer ple:*history*) 0)
+      (ple:load-history path)
+      (check (equal '("(+ 1 2)" "ls | take 3") (coerce ple:*history* 'list))
+             :history-survives-a-restart)
+      ;; Appending rather than rewriting means a crash keeps what was typed,
+      ;; and two sessions interleave instead of clobbering each other.
+      (ple:add-history "counter")
+      (setf (fill-pointer ple:*history*) 0)
+      (ple:load-history path)
+      (check (= 3 (length ple:*history*)) :appends-rather-than-rewrites))
+    (ignore-errors (delete-file path)))
+  ;; A missing file is not an error: losing history never justifies failing.
+  (check (eql 0 (let ((ple:*history* (make-array 0 :adjustable t :fill-pointer 0)))
+                  (ple:load-history "/tmp/plumb-no-such-history")))
+         :missing-history-file-is-fine))
+
+(defun test-completion ()
+  (check (string= "to-" (ple::common-prefix '("to-text" "to-sh" "to-file"))) :common-prefix)
+  (check (string= "take" (ple::common-prefix '("take"))) :single-candidate)
+  (check (string= "" (ple::common-prefix '("take" "where"))) :nothing-in-common)
+  ;; The completer reads the same two places HELP does, so they stay in step.
+  (let ((hits (plumb.cli::plumb-completions "to-")))
+    (check (member "to-text" hits :test #'string=) :completes-stage-names)
+    (check (member "to-file" hits :test #'string=) :completes-new-stages))
+  (check (member "*default-capacity*" (plumb.cli::plumb-completions "*def") :test #'string=)
+         :completes-variables-too)
+  (check (null (plumb.cli::plumb-completions "zzzznope")) :no-match-is-empty))
+
 ;;; --------------------------------------------------- the word-mode reader
 ;;;
 ;;; READ-SHELL is a source-to-source pass, so most of it tests by comparing
@@ -617,7 +693,7 @@ return the resulting text and point."
 (defun stage-named (name) (gethash name plumb::*stages*))
 
 (defun test-help-registry ()
-  (check (= 18 (hash-table-count plumb::*stages*)) :every-stage-registered)
+  (check (= 20 (hash-table-count plumb::*stages*)) :every-stage-registered)
   (check (eq :source (plumb::stage-kind (stage-named 'counter))) :counter-is-a-source)
   (check (eq :transform (plumb::stage-kind (stage-named 'where))) :where-is-a-transform)
   (check (eq :sink (plumb::stage-kind (stage-named 'print-items))) :print-items-is-a-sink)
@@ -698,6 +774,10 @@ return the resulting text and point."
                   test-type-check
                   test-cancel
                   test-each-backpressure-end-to-end
+                  test-sink-ends-the-pipeline
+                  test-redirection
+                  test-history-persists
+                  test-completion
                   test-glob
                   test-reader-dispatch
                   test-reader-pipeline
