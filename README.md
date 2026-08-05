@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 160 assertions
+(asdf:test-system "plumb")     ; 165 assertions
 ```
 
 ```
@@ -83,6 +83,18 @@ so `glob` translates before handing the pattern to `directory`.
 
 There is no glob-in-stage-position shorthand: write `ls *.lisp`, not `*.lisp`.
 Same reasoning as `sh` — an unknown first word stays an error.
+
+**Dotfiles need quoting.** A bare `.name` is the field-accessor shorthand, and
+`.gitignore` is lexically identical to `.size`, so it cannot be told apart:
+
+```
+$ plumb 'ls .gitignore'      # parses as (ls ($ (fld :gitignore)))
+plumb: A bare .name is a field accessor, so a dotfile needs quoting: …
+$ plumb 'ls ".gitignore"'    # this is the way
+```
+
+A lone `.` is below the two-character threshold, so `ls .` and `ls ".."` both
+mean what you expect.
 
 Suffixes are two narrow substitutions, not a reader macro — catching `1kb` at
 read time would mean owning the digit characters and reimplementing CL's number

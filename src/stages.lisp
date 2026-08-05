@@ -45,6 +45,12 @@ wild name with no type has to match any type as well."
   "Pathnames matching SPEC, sorted so output is stable.  A pattern containing
 * ? or [...] globs and ** descends; a directory lists its members; anything
 else names itself."
+  ;; A bare .name is the field-accessor shorthand, so a dotfile written without
+  ;; quotes arrives here as a block instead of a path.  Saying so beats "the
+  ;; value #<FUNCTION (LAMBDA (IT))> is not of type ..." by a wide margin.
+  (when (functionp spec)
+    (error "A bare .name is a field accessor, so a dotfile needs quoting: ~
+write (ls \".gitignore\") -- in word mode, ls \".gitignore\"."))
   (flet ((sorted (paths) (sort paths #'string< :key #'namestring)))
     (let ((pathname (pathname spec)))
       (cond

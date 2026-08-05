@@ -7,7 +7,7 @@ carrying Lisp objects, instead of processes and byte streams. SBCL only
 (`sb-thread`, `sb-mop`), no external dependencies, no Quicklisp/ocicl needed.
 
 ```
-sbcl --eval '(asdf:test-system "plumb")'   ; 160 assertions, all passing
+sbcl --eval '(asdf:test-system "plumb")'   ; 165 assertions, all passing
 make                                       ; dump bin/plumb
 sbcl --script demo.lisp
 ```
@@ -123,6 +123,12 @@ sbcl --script demo.lisp
      `|1KB|` inside a block, which is read as ordinary Lisp. Sizes are binary
      and durations are seconds; minutes are `min` because `m` is megabytes.
      Known wart: the block rewrite does not respect `quote`.
+   - **A bare `.name` collides with dotfiles**, and cannot be disambiguated:
+     `.gitignore` is lexically identical to `.size`. Quoting is the escape, and
+     `glob` says so rather than reporting a type error about a lambda. The
+     alternative is dropping the bare shorthand and always writing `{.size}`,
+     which trades a common convenience for a rare one. A lone `.` is below the
+     two-character threshold, so `ls .` is a path.
    - **`sh` stays explicit.** No falling back to an external command when the
      first word is not a known stage. That fallback is what shells do, but it
      is a lookup rule, and under it a mistyped stage name silently becomes a

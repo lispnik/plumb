@@ -203,6 +203,21 @@
     ;; A plain file is itself; a pattern matching nothing is empty, not an error.
     (check (equal '("README.md") (names (glob "README.md"))) :a-file-names-itself)
     (check (null (glob "*.nosuchtype")) :no-matches-is-empty)
+    ;; A dotfile written bare parses as the .name accessor shorthand.  It
+    ;; cannot be disambiguated lexically -- .gitignore and .size are the same
+    ;; shape -- so the fix is quoting, and the job here is to say so.
+    (check (equal '(ls ($ (fld :gitignore))) (read-shell "ls .gitignore"))
+           :bare-dotfile-is-read-as-an-accessor)
+    (check (equal '(ls ".gitignore") (read-shell "ls \".gitignore\""))
+           :quoting-a-dotfile-works)
+    (check (search "needs quoting"
+                   (handler-case (progn (glob (lambda (it) it)) "")
+                     (error (c) (princ-to-string c))))
+           :the-error-names-the-fix)
+    ;; A lone . is one character, below the accessor threshold, so it stays a
+    ;; path and `ls .` means the current directory.
+    (check (equal '(ls ".") (read-shell "ls .")) :lone-dot-is-a-path)
+    (check (member "README.md" (names (glob ".")) :test #'string=) :dot-is-the-cwd)
     ;; Sorted, so pipelines built on LS are reproducible.
     (let ((got (names (glob "src/*.lisp"))))
       (check (equal got (sort (copy-list got) #'string<)) :results-are-sorted))))
