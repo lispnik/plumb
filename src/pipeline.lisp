@@ -79,10 +79,13 @@ clear error instead of a deadlock or a type error 400 items in."
          (when in (close-input in)))))
    :name (format nil "plumb:~a" (stage-name stage))))
 
-(defun run (stages &key sink err (capacity *default-capacity*) (check t))
+(defun run (stages &key sink err input (capacity *default-capacity*) (check t))
   "Wire STAGES into a pipeline and start it.  Returns a PIPELINE.
 SINK, if given, is a channel receiving the last stage's output; otherwise
-output is discarded.  ERR likewise for conditions."
+output is discarded.  ERR likewise for conditions.  INPUT, if given, is a
+channel the FIRST stage reads from -- which is what lets one pipeline feed
+another, and so what TEE is built on.  A pipeline given an INPUT starts with a
+transform rather than a source, so CHECK-PIPELINE has nothing extra to say."
   (setf stages (remove nil stages))
   (assert stages () "Empty pipeline.")
   (when check (check-pipeline stages))
@@ -104,7 +107,7 @@ output is discarded.  ERR likewise for conditions."
           (loop for s in stages
                 for i from 0
                 collect (spawn-stage s
-                                     (if (zerop i) nil (nth (1- i) chans))
+                                     (if (zerop i) input (nth (1- i) chans))
                                      (list :out (if (= i (1- n)) sink (nth i chans))
                                            :err err)
                                      :pipeline pipe)))

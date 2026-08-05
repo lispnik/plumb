@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 201 assertions
+(asdf:test-system "plumb")     ; 211 assertions
 ```
 
 ```
@@ -270,6 +270,35 @@ calling thread, so backpressure reaches all the way back to the source.
             (sort-by ($ (fld :mtime)) :desc t)
             (take 10))
       #'print)
+```
+
+## Fan-out
+
+`tee` sends every object down each of its branches as well as onward, so one
+stream feeds several pipelines:
+
+```lisp
+(list (ls "src/")
+      (tee (list (where ($ (fld :dir-p))) (to-file "dirs.txt"))
+           (list (tally)))
+      (sort-by ($ (fld :size)) :desc t))
+```
+
+A branch is an ordinary list of stages, run with `run :input` — the channel a
+pipeline reads from instead of starting at a source. **A branch that stops
+early is dropped and the rest carry on**; that independence is the whole point.
+A `take` *downstream* of a `tee` still tears the source down through it.
+
+Objects are **shared** with the branches, not copied. Nothing can deep-copy an
+arbitrary Lisp object correctly, and every stage here produces new values
+rather than mutating. Note what sharing means: `tee` sends to the branches and
+emits onward concurrently, so a branch that mutates is a data *race*, not
+merely a visible change.
+
+Copying is therefore a **stage**, not a flag — explicit and composable:
+
+```lisp
+(tee (list (xform #'copy-file-entry) (xform #'mutate!)))
 ```
 
 ## The four channel operations

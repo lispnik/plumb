@@ -209,6 +209,45 @@ hits EOF, which the type signature does not say and does not need to."
     (write-line (present x) stream)
     (force-output stream)))
 
+(defstage tee (&rest branches)
+  "Send every object down each of BRANCHES as well as onward, so one stream
+feeds several pipelines.  Each branch is an ordinary list of stages.
+
+  (tee (list (where ($ (fld :dir-p))) (to-file \"dirs.txt\"))
+       (list (tally)))
+
+Objects are SHARED with the branches, not copied.  That is deliberate: nothing
+can deep-copy an arbitrary Lisp object correctly, and every stage here already
+produces new values rather than mutating.  Note what sharing means -- this
+stage sends to the branches and emits onward concurrently, so a branch that
+mutates is a data *race*, not merely a visible change.  Where a branch must
+mutate, copying is itself a stage: put (xform #'copy-file-entry) at its head.
+That keeps the policy explicit and composable instead of a flag on TEE.
+
+A branch that stops early, say on a TAKE, is dropped and the rest carry on;
+that independence is the entire point of a fan-out."
+  (:consumes :objects) (:produces :objects)
+  ;; This spawns pipelines, which is as close as anything here comes to a stage
+  ;; containing concurrency.  It stays within the rule in the way that matters:
+  ;; all coordination is still SEND, RECV and one UNWIND-PROTECT, and the
+  ;; threads belong to RUN rather than to this body.
+  (let* ((heads (mapcar (lambda (branch)
+                          (make-channel :name (format nil "tee->~a"
+                                                      (stage-name (first branch)))))
+                        branches))
+         (pipes (mapcar (lambda (branch head) (run branch :input head)) branches heads))
+         (live (copy-list heads)))
+    (unwind-protect
+         (do-input (x)
+           (dolist (head heads)
+             (when (member head live)
+               (handler-case (send head x)
+                 (channel-closed () (setf live (remove head live))))))
+           (emit x))
+      ;; Every branch gets its EOF whichever way this stage ended.
+      (dolist (head heads) (ignore-errors (close-output head)))
+      (dolist (pipe pipes) (ignore-errors (join pipe))))))
+
 (defstage to-file ((path (or string pathname)) &key (if-exists :supersede))
   "Write each object to PATH, one line each.  A sink; what > and >> expand to.
 WITH-OPEN-FILE is the teardown story -- an upstream error or a downstream close

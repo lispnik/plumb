@@ -7,13 +7,17 @@ carrying Lisp objects, instead of processes and byte streams. SBCL only
 (`sb-thread`, `sb-mop`), no external dependencies, no Quicklisp/ocicl needed.
 
 ```
-sbcl --eval '(asdf:test-system "plumb")'   ; 201 assertions, all passing
+sbcl --eval '(asdf:test-system "plumb")'   ; 211 assertions, all passing
 make                                       ; dump bin/plumb
 sbcl --script demo.lisp
 ```
 
 ## Design decisions already made — don't relitigate these without reason
 
+- **A stage contains no concurrency**, with one deliberate exception: `tee`
+  calls `run` to start its branches. It stays within the rule where it matters
+  -- all coordination is still `send`/`recv` and one `unwind-protect`, and the
+  threads belong to `run`.
 - **A stage contains no concurrency.** Ports arrive via the dynamic variables
   `*input*` and `*outputs*`, bound by `spawn-stage`. A stage body is an ordinary
   loop. All coordination lives in `send`/`recv` and one `unwind-protect`.
@@ -61,10 +65,15 @@ sbcl --script demo.lisp
    collapse into one thread. A thread per stage is fine at 6 stages; it is not
    fine when a loop spawns a pipeline per file. Needs a `fusable-p` flag on
    `stage` and a pass in `run` that composes thunks.
-2. **Fan-out / `tee`.** Pipelines are linear today. `stage-ports` already exists
-   but `run` only wires `:out` and `:err`. Needs a graph builder *and* a
-   decision on copy-on-fanout: objects crossing a channel are shared references,
-   so two branches mutating one row is a bug class real pipes cannot have.
+2. **Fan-out, the rest of it.** `tee` (`src/stages.lisp`) fans one stream into
+   several pipelines, built on `run :input`. Copy-on-fanout is settled:
+   objects are **shared**, and copying is a stage (`(xform #'copy-file-entry)`
+   at a branch head) rather than a flag -- nothing can deep-copy an arbitrary
+   Lisp object correctly. Sharing means a mutating branch is a data *race*,
+   since `tee` sends to branches and emits onward concurrently.
+   What remains is the *general graph*: `stage-ports` is still write-only, so a
+   stage cannot route to `:left`/`:right` by content. `tee` covers one stream
+   to many; content-based demux would need `run` to wire named ports.
 3. **External processes, the rest of it.** `sh` and `to-sh` (`src/process.lisp`)
    cover the source and sink shapes: lifetime is handled in `with-command`'s
    `unwind-protect`, and a non-zero exit signals `command-failed`, which rides

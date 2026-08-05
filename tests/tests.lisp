@@ -499,6 +499,72 @@ that catches it."
       (join (run (list (from-list '(1)) (xform #'identity)) :err err))
       (check (null (nth-value 1 (recv err))) :err-really-closes-at-the-end))))
 
+(defun test-run-accepts-an-input-channel ()
+  "RUN :INPUT is what lets one pipeline feed another, and so what TEE is on."
+  (with-timeout (10 :run-input)
+    (let* ((head (make-channel))
+           (sink (make-channel))
+           (pipe (run (list (xform #'1+)) :input head :sink sink)))
+      (send head 41)
+      (close-output head)
+      (check (eql 42 (recv sink)) :input-channel-feeds-the-first-stage)
+      (join pipe))))
+
+(defun test-tee-fans-out ()
+  (with-timeout (15 :tee)
+    ;; Every branch sees everything, and the stream still goes onward.
+    (let ((a '()) (b '()))
+      (check (equal '(0 1 2)
+                    (collect-pipeline
+                     (list (counter :limit 3)
+                           (tee (list (xform (lambda (x) (push x a) x)))
+                                (list (xform (lambda (x) (push x b) x)))))))
+             :passes-through)
+      (check (equal '(0 1 2) (reverse a)) :first-branch-saw-everything)
+      (check (equal '(0 1 2) (reverse b)) :second-branch-saw-everything))
+    ;; A branch that stops early is dropped; the others carry on.  That
+    ;; independence is the entire point of a fan-out.
+    (let ((short '()) (whole '()))
+      (collect-pipeline
+       (list (counter :limit 6)
+             (tee (list (take 2) (xform (lambda (x) (push x short) x)))
+                  (list (xform (lambda (x) (push x whole) x))))))
+      (check (equal '(0 1) (reverse short)) :short-branch-stopped)
+      (check (equal '(0 1 2 3 4 5) (reverse whole)) :other-branch-unaffected))))
+
+(defun test-tee-tears-down ()
+  "A TAKE downstream of a TEE has to stop an infinite source through it."
+  (with-timeout (15 :tee-teardown)
+    (check (equal '(0 1 2)
+                  (collect-pipeline (list (counter)
+                                          (tee (list (xform #'identity)))
+                                          (take 3))))
+           :downstream-take-stops-everything)))
+
+(defun test-tee-shares-objects ()
+  "Objects are SHARED with the branches, not copied -- nothing can deep-copy an
+arbitrary Lisp object correctly.  Identity is the deterministic way to say it:
+a branch mutating a shared object is a data *race*, since TEE sends to the
+branches and emits onward concurrently, so when the change lands is not
+defined.  Copying is a stage when a branch needs one."
+  (with-timeout (10 :tee-sharing)
+    (let ((from-branch nil) (from-main nil))
+      (collect-pipeline
+       (list (from-list (list (make-file-entry :name "a" :size 1)))
+             (tee (list (xform (lambda (e) (setf from-branch e) e))))
+             (xform (lambda (e) (setf from-main e) e))))
+      ;; TEE joins its branches on the way out, so both have run by now.
+      (check (eq from-branch from-main) :branches-share-the-same-object))
+    ;; A copy stage at the head of a branch is the documented fix.
+    (let ((from-branch nil) (from-main nil))
+      (collect-pipeline
+       (list (from-list (list (make-file-entry :name "a" :size 1)))
+             (tee (list (xform #'copy-file-entry)
+                        (xform (lambda (e) (setf from-branch e) e))))
+             (xform (lambda (e) (setf from-main e) e))))
+      (check (not (eq from-branch from-main)) :a-copy-stage-isolates-a-branch)
+      (check (equal "a" (file-entry-name from-branch)) :and-the-copy-is-faithful))))
+
 ;;; --------------------------------------------------- external processes
 ;;;
 ;;; These shell out, so they assume a unix /bin/sh with echo, false, cat, yes.
@@ -693,7 +759,7 @@ return the resulting text and point."
 (defun stage-named (name) (gethash name plumb::*stages*))
 
 (defun test-help-registry ()
-  (check (= 20 (hash-table-count plumb::*stages*)) :every-stage-registered)
+  (check (= 21 (hash-table-count plumb::*stages*)) :every-stage-registered)
   (check (eq :source (plumb::stage-kind (stage-named 'counter))) :counter-is-a-source)
   (check (eq :transform (plumb::stage-kind (stage-named 'where))) :where-is-a-transform)
   (check (eq :sink (plumb::stage-kind (stage-named 'print-items))) :print-items-is-a-sink)
@@ -775,6 +841,10 @@ return the resulting text and point."
                   test-cancel
                   test-each-backpressure-end-to-end
                   test-sink-ends-the-pipeline
+                  test-run-accepts-an-input-channel
+                  test-tee-fans-out
+                  test-tee-tears-down
+                  test-tee-shares-objects
                   test-redirection
                   test-history-persists
                   test-completion

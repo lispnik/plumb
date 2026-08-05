@@ -22,7 +22,7 @@
    ;; built-in stages
    #:from-list #:counter #:ls #:lines #:sh #:to-sh #:glob
    #:where #:xform #:take #:drop #:uniq #:sort-by #:tally #:accumulate
-   #:peek #:to-text #:print-items #:table #:to-file #:from-file
+   #:peek #:to-text #:print-items #:table #:to-file #:from-file #:tee
    ;; external processes
    #:command-failed #:command-failed-command #:command-failed-exit-code
    #:command-failed-stderr #:emit-lines
@@ -35,9 +35,10 @@
    ;; terminal colour (src/ansi.lisp)
    #:+esc+ #:*color* #:color-p #:paint #:visible-width
    ;; misc
-   #:file-entry #:make-file-entry #:file-entry-path #:file-entry-name
+   ;; COPY-* are the escape hatch TEE documents: copying is a stage.
+   #:file-entry #:make-file-entry #:copy-file-entry #:file-entry-path #:file-entry-name
    #:file-entry-size #:file-entry-mtime #:file-entry-dir-p
-   #:line #:make-line #:line-text #:line-number))
+   #:line #:make-line #:copy-line #:line-text #:line-number #:line-source))
 
 ;;; Loaded only by the PLUMB/CLI system, but declared here so that every
 ;;; package in the project has one home.
