@@ -248,6 +248,24 @@ that independence is the entire point of a fan-out."
       (dolist (head heads) (ignore-errors (close-output head)))
       (dolist (pipe pipes) (ignore-errors (join pipe))))))
 
+(defstage route ((pred (or function symbol)))
+  "Send objects satisfying PRED out the :YES port and the rest out :NO, wiring
+each to its own branch:
+
+  (run (list (ls) (route ($ (fld :dir-p))))
+       :ports (list :yes (list (to-file \"dirs.txt\"))
+                    :no  (list (to-file \"files.txt\"))))
+
+Nothing goes out :OUT, so this ends the main line -- the branches are where the
+objects went.  A port with no branch is discarded, which EXPLAIN reports.
+
+TRY-EMIT rather than EMIT: one branch finishing must leave the others running,
+which is the difference between a fan-out and a pipeline."
+  (:consumes :objects) (:produces nil) (:ports :yes :no)
+  (let ((pred (ensure-fn pred)))
+    (do-input (x)
+      (try-emit x (if (funcall pred x) :yes :no)))))
+
 (defstage to-file ((path (or string pathname)) &key (if-exists :supersede))
   "Write each object to PATH, one line each.  A sink; what > and >> expand to.
 WITH-OPEN-FILE is the teardown story -- an upstream error or a downstream close

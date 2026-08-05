@@ -432,7 +432,13 @@ nothing, so the metadata is all there while the pipeline is still inert."
            :non-barriers-are-not)
     (check (search "Nothing to explain" (help-output (explain '()))) :empty-pipeline)
     ;; A lone stage is a pipeline of one.
-    (check (search "1 stage," (help-output (explain (take 1)))) :single-stage)))
+    (check (search "1 stage," (help-output (explain (take 1)))) :single-stage)
+    ;; A graph draws as the graph it is, unwired ports included.
+    (let ((out (help-output (explain (list (counter :limit 1) (route #'evenp))
+                                     :ports (list :yes (list (tally)))))))
+      (check (search "2 named ports" out) :counts-ports)
+      (check (search "yes (:objects) → tally" out) :draws-a-wired-branch)
+      (check (search "discarded, no branch" out) :draws-an-unwired-port))))
 
 (defun test-explain-reads-as-a-reserved-word ()
   "EXPLAIN wraps the whole pipeline, the way bash's `time` does."
@@ -564,6 +570,57 @@ defined.  Copying is a stage when a branch needs one."
              (xform (lambda (e) (setf from-main e) e))))
       (check (not (eq from-branch from-main)) :a-copy-stage-isolates-a-branch)
       (check (equal "a" (file-entry-name from-branch)) :and-the-copy-is-faithful))))
+
+(defun test-named-ports ()
+  "RUN reads STAGE-PORTS and wires each declared port to its own branch.  That
+is the graph builder; TEE is one stream to many, this is many streams out."
+  (with-timeout (15 :named-ports)
+    (let ((yes '()) (no '()))
+      (join (run (list (counter :limit 6) (route #'evenp))
+                 :ports (list :yes (list (xform (lambda (x) (push x yes) x)))
+                              :no  (list (xform (lambda (x) (push x no) x))))))
+      (check (equal '(0 2 4) (reverse yes)) :matching-objects-went-to-yes)
+      (check (equal '(1 3 5) (reverse no)) :the-rest-went-to-no))
+    ;; A declared port with no branch is discarded rather than missing: EMIT
+    ;; succeeds and the objects go nowhere, instead of erroring in a thread.
+    (let ((yes '()))
+      (join (run (list (counter :limit 4) (route #'evenp))
+                 :ports (list :yes (list (xform (lambda (x) (push x yes) x))))))
+      (check (equal '(0 2) (reverse yes)) :unwired-port-is-discarded))
+    ;; Branch failures are the pipeline's failures -- from outside there is one.
+    (let ((pipe (run (list (counter :limit 3) (route #'evenp))
+                     :ports (list :yes (list (xform (lambda (x) (declare (ignore x))
+                                                      (error "boom"))))))))
+      (check (plusp (length (join pipe))) :branch-failures-reach-the-parent))))
+
+(defun test-named-port-types ()
+  ":PRODUCES describes :OUT alone, so a named port carries its own type -- or
+the graph would be untyped exactly where it branches."
+  (check (eq :objects (port-type (route #'evenp) :yes)) :declared-port-type)
+  (check (null (port-type (route #'evenp) :out)) :produces-still-describes-out)
+  ;; A branch head that cannot take what the port carries is caught before any
+  ;; thread starts, and the message names the port rather than quoting
+  ;; :PRODUCES, which describes a different port.
+  (let ((condition (handler-case
+                       (progn (run (list (counter :limit 1) (route #'evenp))
+                                   :ports (list :yes (list (counter))))
+                              nil)
+                     (pipeline-type-error (c) c))))
+    (check condition :branch-type-mismatch-is-caught)
+    (check (eq :yes (pipeline-type-error-port condition)) :the-error-knows-the-port)
+    (check (search ":YES port carries :OBJECTS" (princ-to-string condition))
+           :and-says-so)))
+
+(defun test-try-emit ()
+  "EMIT is strict, which is how TAKE stops an infinite source.  A routing stage
+needs the opposite: one branch ending must leave the others running."
+  (with-timeout (15 :try-emit)
+    (let ((no '()))
+      ;; The :YES branch takes 1 and stops; :NO must still see everything.
+      (join (run (list (counter :limit 6) (route #'evenp))
+                 :ports (list :yes (list (take 1))
+                              :no  (list (xform (lambda (x) (push x no) x))))))
+      (check (equal '(1 3 5) (reverse no)) :a-closed-branch-does-not-stop-the-rest))))
 
 ;;; --------------------------------------------------- external processes
 ;;;
@@ -759,7 +816,7 @@ return the resulting text and point."
 (defun stage-named (name) (gethash name plumb::*stages*))
 
 (defun test-help-registry ()
-  (check (= 21 (hash-table-count plumb::*stages*)) :every-stage-registered)
+  (check (= 22 (hash-table-count plumb::*stages*)) :every-stage-registered)
   (check (eq :source (plumb::stage-kind (stage-named 'counter))) :counter-is-a-source)
   (check (eq :transform (plumb::stage-kind (stage-named 'where))) :where-is-a-transform)
   (check (eq :sink (plumb::stage-kind (stage-named 'print-items))) :print-items-is-a-sink)
@@ -845,6 +902,9 @@ return the resulting text and point."
                   test-tee-fans-out
                   test-tee-tears-down
                   test-tee-shares-objects
+                  test-named-ports
+                  test-named-port-types
+                  test-try-emit
                   test-redirection
                   test-history-persists
                   test-completion

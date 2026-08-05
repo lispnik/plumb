@@ -16,6 +16,9 @@
   (consumes t)                          ; :objects :bytes NIL(=source) or T(=any)
   (produces t)                          ; :objects :bytes NIL(=sink)  or T(=any)
   (ports '(:out :err))
+  ;; :PRODUCES describes :OUT alone, so a named port carries its own type or
+  ;; the graph would be untyped exactly where it branches.
+  (port-types '())
   (barrier nil)                         ; emits nothing until its input EOFs
   (args '()))
 
@@ -30,6 +33,16 @@
 (defmacro emit (object &optional (port :out))
   "Write OBJECT to one of this stage's output ports."
   `(send (port ,port) ,object))
+
+(defmacro try-emit (object &optional (port :out))
+  "EMIT unless that port's reader has gone; T when the object was taken.
+
+EMIT is deliberately strict: a closed reader signals CHANNEL-CLOSED, which
+unwinds the stage and is exactly how TAKE stops an infinite source.  A routing
+stage wants the opposite -- one branch finishing must not stop the others -- so
+it emits with this instead."
+  `(handler-case (progn (emit ,object ,port) t)
+     (channel-closed () nil)))
 
 (defmacro finish ()
   "Terminate this stage early.  Unwinding closes the input channel, which
@@ -63,7 +76,8 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
         (values arglist '()))))
 
 (defun %parse-stage-body (body)
-  (let ((consumes t) (produces t) (ports '(:out :err)) (barrier nil) (doc nil))
+  (let ((consumes t) (produces t) (ports '(:out :err)) (port-types '())
+        (barrier nil) (doc nil))
     (when (and (stringp (car body)) (cdr body))
       (setf doc (pop body)))
     (loop while (and (consp (car body))
@@ -73,8 +87,20 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
                (:consumes (setf consumes (second form)))
                (:produces (setf produces (second form)))
                (:barrier  (setf barrier (second form)))
-               (:ports (setf ports (union (rest form) '(:out :err))))))
-    (values consumes produces ports barrier doc body)))
+               ;; (:ports :yes :no) or (:ports (:yes :bytes) :no).  A bare
+               ;; name carries :OBJECTS, which is what a branch almost always
+               ;; wants and what :CONSUMES already defaults to elsewhere.
+               (:ports
+                (let ((specs (rest form)))
+                  (setf port-types
+                        (loop for spec in specs
+                              collect (if (consp spec)
+                                          (cons (first spec) (second spec))
+                                          (cons spec :objects)))
+                        ports
+                        (union (mapcar (lambda (s) (if (consp s) (first s) s)) specs)
+                               '(:out :err)))))))
+    (values consumes produces ports port-types barrier doc body)))
 
 ;;; The registry behind HELP.  DEFSTAGE knows the type signature and the
 ;;; docstring at definition time; a STAGE instance only exists once someone has
@@ -84,7 +110,7 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
   "Stage name -> STAGE-INFO, for HELP.  Populated by DEFSTAGE.")
 
 (defstruct (stage-info (:conc-name si-) (:copier nil))
-  name lambda-list consumes produces ports barrier documentation)
+  name lambda-list consumes produces ports port-types barrier documentation)
 
 (defun stage-kind (info)
   (cond ((null (si-consumes info)) :source)
@@ -95,7 +121,7 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
   "Define a stage constructor.  Calling it returns a STAGE; running a pipeline
 is what actually spawns a thread."
   (multiple-value-bind (required rest-of-lambda-list) (%split-arglist arglist)
-    (multiple-value-bind (consumes produces ports barrier doc real-body)
+    (multiple-value-bind (consumes produces ports port-types barrier doc real-body)
         (%parse-stage-body body)
       (let* ((req-names (mapcar (lambda (p) (if (consp p) (first p) p)) required))
              (checks (loop for p in required
@@ -113,6 +139,7 @@ is what actually spawns a thread."
                                   :consumes ,consumes
                                   :produces ,produces
                                   :ports ',ports
+                                  :port-types ',port-types
                                   :barrier ,barrier
                                   :documentation ,doc))
            (defun ,name (,@req-names ,@rest-of-lambda-list)
@@ -122,6 +149,7 @@ is what actually spawns a thread."
                          :consumes ,consumes
                          :produces ,produces
                          :ports ',ports
+                         :port-types ',port-types
                          :barrier ,barrier
                          :args (list ,@(loop for n in all-names
                                              append (list (intern (string n) :keyword) n)))

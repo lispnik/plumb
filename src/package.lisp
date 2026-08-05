@@ -14,15 +14,18 @@
    ;; stages
    #:stage #:stage-p #:stage-name #:stage-args #:stage-consumes #:stage-produces #:stage-barrier
    #:defstage
-   #:*input* #:*outputs* #:port #:emit #:finish #:do-input
+   #:*input* #:*outputs* #:port #:emit #:try-emit #:finish #:do-input
+   #:stage-ports #:stage-port-types #:extra-ports #:port-type
    ;; pipelines
    #:pipeline #:run #:collect-pipeline #:each #:join #:cancel
    #:pipeline-failures #:pipeline-threads #:pipeline-stages
-   #:pipeline-channels #:pipeline-sink #:pipeline-error #:check-pipeline #:pipeline-type-error
+   #:pipeline-channels #:pipeline-branches #:pipeline-sink #:pipeline-error #:pipeline-error-stage #:pipeline-error-cause
+   #:check-pipeline #:pipeline-type-error #:pipeline-type-error-port
+   #:pipeline-type-error-upstream #:pipeline-type-error-downstream
    ;; built-in stages
    #:from-list #:counter #:ls #:lines #:sh #:to-sh #:glob
    #:where #:xform #:take #:drop #:uniq #:sort-by #:tally #:accumulate
-   #:peek #:to-text #:print-items #:table #:to-file #:from-file #:tee
+   #:peek #:to-text #:print-items #:table #:to-file #:from-file #:tee #:route
    ;; external processes
    #:command-failed #:command-failed-command #:command-failed-exit-code
    #:command-failed-stderr #:emit-lines

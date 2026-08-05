@@ -45,9 +45,25 @@ whose value is NIL are defaults nobody asked for, and would only be noise."
         ((null (stage-produces stage)) "sink")
         (t "transform")))
 
-(defun explain (stages &optional (stream *standard-output*))
+(defun explain-ports (stage ports stream indent)
+  "Draw the named ports a stage declared, and where each one goes.  A port with
+no branch is shown as discarded rather than omitted: EMIT to it succeeds and
+the objects vanish, which is worth seeing before it puzzles someone."
+  (dolist (port (extra-ports stage))
+    (let ((branch (getf ports port)))
+      (format stream "~va~a~%" indent ""
+              (paint (format nil "├─ ~(~a~) (~a) → ~a" port
+                             (render-type (port-type stage port))
+                             (if branch
+                                 (format nil "~{~(~a~)~^ | ~}"
+                                         (mapcar #'stage-name (remove nil branch)))
+                                 "discarded, no branch"))
+                     (if branch :cyan :yellow))))))
+
+(defun explain (stages &key (stream *standard-output*) ports)
   "Draw STAGES without running them: what each stage is, what it carries, where
-the channels sit, and whether the types line up.  Returns no values."
+the channels sit, which named ports go where, and whether the types line up.
+PORTS is RUN's port plist, so a graph draws as the graph it is.  No values."
   (let* ((stages (remove nil (if (stage-p stages) (list stages) stages)))
          (n (length stages)))
     (unless stages
@@ -59,10 +75,12 @@ the channels sit, and whether the types line up.  Returns no values."
                            stages))
            (width (reduce #'max labels :key #'length :initial-value 0))
            (problems '()))
-      (format stream "~&~a~%~%"
-              (paint (format nil "pipeline of ~d stage~:p, ~d channel~:p, ~d thread~:p"
-                             n (1- n) n)
-                     :bold))
+      (let ((branch-count (loop for s in stages sum (length (extra-ports s)))))
+        (format stream "~&~a~%~%"
+                (paint (format nil "pipeline of ~d stage~:p, ~d channel~:p, ~d thread~:p~
+~@[, ~d named port~:p~]"
+                               n (1- n) n (when (plusp branch-count) branch-count))
+                       :bold)))
       (loop for stage in stages
             for label in labels
             for i from 0
@@ -73,6 +91,7 @@ the channels sit, and whether the types line up.  Returns no values."
                        (paint (explain-signature stage) :grey))
                ;; Between two stages sits one bounded channel; after the last
                ;; one sits whatever RUN was handed as a sink.
+               (explain-ports stage ports stream (+ width 5))
                (when (stage-barrier stage)
                  (format stream "  ~a~%"
                          (paint "    ⋯ barrier: emits nothing until its input ends"

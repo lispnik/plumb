@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 211 assertions
+(asdf:test-system "plumb")     ; 224 assertions
 ```
 
 ```
@@ -300,6 +300,53 @@ Copying is therefore a **stage**, not a flag — explicit and composable:
 ```lisp
 (tee (list (xform #'copy-file-entry) (xform #'mutate!)))
 ```
+
+### Named ports
+
+`tee` is one stream to many. The other direction — **many streams out** — is a
+stage declaring extra output ports, which `run` wires to their own branches:
+
+```lisp
+(defstage route ((pred (or function symbol)))
+  (:consumes :objects) (:produces nil) (:ports :yes :no)
+  (let ((pred (ensure-fn pred)))
+    (do-input (x)
+      (try-emit x (if (funcall pred x) :yes :no)))))
+```
+```lisp
+(run (list (ls "src/") (route ($ (> (or (fld :size) 0) 10kb))))
+     :ports (list :yes (list (xform ($ (fld :name))) (to-file "big.txt"))
+                  :no  (list (tally))))
+```
+
+Three things this settled:
+
+**Ports carry their own types.** `:produces` describes `:out` alone, so a named
+port declares its own — `(:ports (:yes :bytes) :no)`, defaulting to `:objects`.
+Without that the graph would be untyped exactly where it branches. Branch heads
+are checked before any thread starts, and the error names the port:
+
+```
+ROUTE's :YES port carries :OBJECTS but COUNTER consumes NIL.
+```
+
+**`try-emit`, not `emit`.** `emit` is deliberately strict — a closed reader
+signals `channel-closed`, which is precisely how `take` stops an infinite
+source. A routing stage wants the opposite, since one branch ending must leave
+the others running, so it uses `try-emit` and gets `nil` instead.
+
+**An unwired port is discarded, not missing.** `emit` to it succeeds and the
+objects go nowhere, rather than erroring inside a thread — and `explain` says
+so, so it can't puzzle you silently:
+
+```
+  route pred=fn      sink       :objects → nothing
+                     ├─ yes (:objects) → tally
+                     ├─ no (:objects) → discarded, no branch
+```
+
+Port names are one flat namespace per `run`. One level of demux is what a shell
+wants; deeper nests by putting a routing stage inside a branch.
 
 ## The four channel operations
 

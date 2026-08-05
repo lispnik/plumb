@@ -7,6 +7,7 @@
   (stages '())
   (threads '())
   (channels '())
+  (branches '())                        ; sub-pipelines fed by named ports
   (sink nil)
   (err nil)
   (failures '())
@@ -21,14 +22,22 @@
 
 (define-condition pipeline-type-error (error)
   ((upstream :initarg :upstream :reader pipeline-type-error-upstream)
-   (downstream :initarg :downstream :reader pipeline-type-error-downstream))
+   (downstream :initarg :downstream :reader pipeline-type-error-downstream)
+   ;; Which port disagreed.  :OUT for the main line; a named port otherwise,
+   ;; and then :PRODUCES is the wrong thing to quote -- it describes :OUT.
+   (port :initarg :port :initform :out :reader pipeline-type-error-port))
   (:report
    (lambda (c s)
      (let ((up (pipeline-type-error-upstream c))
-           (down (pipeline-type-error-downstream c)))
-       (format s "~a produces ~s but ~a consumes ~s."
-               (stage-name up) (stage-produces up)
-               (stage-name down) (stage-consumes down))))))
+           (down (pipeline-type-error-downstream c))
+           (port (pipeline-type-error-port c)))
+       (if (eq port :out)
+           (format s "~a produces ~s but ~a consumes ~s."
+                   (stage-name up) (stage-produces up)
+                   (stage-name down) (stage-consumes down))
+           (format s "~a's ~s port carries ~s but ~a consumes ~s."
+                   (stage-name up) port (port-type up port)
+                   (stage-name down) (stage-consumes down)))))))
 
 (defvar *pipeline* nil "The pipeline the current stage thread belongs to.")
 
@@ -79,13 +88,61 @@ clear error instead of a deadlock or a type error 400 items in."
          (when in (close-input in)))))
    :name (format nil "plumb:~a" (stage-name stage))))
 
-(defun run (stages &key sink err input (capacity *default-capacity*) (check t))
+(defun extra-ports (stage)
+  "The output ports beyond :OUT and :ERR that STAGE declared."
+  (remove-if (lambda (p) (member p '(:out :err))) (stage-ports stage)))
+
+(defun port-type (stage port)
+  "What PORT carries.  :PRODUCES describes :OUT; every other port says so
+itself, defaulting to :OBJECTS."
+  (if (eq port :out)
+      (stage-produces stage)
+      (or (cdr (assoc port (stage-port-types stage))) :objects)))
+
+(defun wire-branches (stages ports capacity pipe check)
+  "Give every declared port a channel, and start the branch reading it.
+
+This is the graph builder.  A stage declaring (:ports :small :large) gets those
+names in its *OUTPUTS*, and each one feeds its own pipeline, supplied by RUN's
+:PORTS argument.  A declared port with no branch is wired to a discard channel
+rather than left missing -- EMIT to it then succeeds and goes nowhere, which
+EXPLAIN reports, instead of erroring inside a thread.
+
+Port names are one flat namespace across a pipeline, so two stages cannot both
+declare :LEFT and expect different branches.  One level of demux is what a
+shell wants; anything deeper nests by putting a routing stage inside a branch."
+  (let ((wiring '()))
+    (dolist (stage stages wiring)
+      (dolist (port (extra-ports stage))
+        (let ((branch (getf ports port)))
+          (cond
+            (branch
+             (when check
+               (let ((head (first (remove nil branch))))
+                 (unless (%compatible-p (port-type stage port) (stage-consumes head))
+                   (error 'pipeline-type-error :upstream stage :downstream head
+                                               :port port))))
+             (let ((channel (make-channel :capacity capacity
+                                          :name (format nil "~a:~(~a~)"
+                                                        (stage-name stage) port))))
+               (push (run branch :input channel :capacity capacity :check check)
+                     (pipeline-branches pipe))
+               (push (cons stage (list port channel)) wiring)))
+            (t (push (cons stage (list port (make-channel :discard t
+                                                          :name (format nil "~(~a~):discarded"
+                                                                        port))))
+                     wiring))))))))
+
+(defun run (stages &key sink err input ports (capacity *default-capacity*) (check t))
   "Wire STAGES into a pipeline and start it.  Returns a PIPELINE.
 SINK, if given, is a channel receiving the last stage's output; otherwise
 output is discarded.  ERR likewise for conditions.  INPUT, if given, is a
 channel the FIRST stage reads from -- which is what lets one pipeline feed
 another, and so what TEE is built on.  A pipeline given an INPUT starts with a
-transform rather than a source, so CHECK-PIPELINE has nothing extra to say."
+transform rather than a source, so CHECK-PIPELINE has nothing extra to say.
+
+PORTS is a plist of port name -> branch pipeline, wiring the extra output ports
+a stage declared with (:ports ...).  See WIRE-BRANCHES."
   (setf stages (remove nil stages))
   (assert stages () "Empty pipeline.")
   (when check (check-pipeline stages))
@@ -103,21 +160,31 @@ transform rather than a source, so CHECK-PIPELINE has nothing extra to say."
     ;; RUN takes ownership of the channel's producer count; a channel shared
     ;; between two pipelines needs the caller to account for both.
     (setf (channel-producers err) n)
-    (setf (pipeline-threads pipe)
-          (loop for s in stages
-                for i from 0
-                collect (spawn-stage s
-                                     (if (zerop i) input (nth (1- i) chans))
-                                     (list :out (if (= i (1- n)) sink (nth i chans))
-                                           :err err)
-                                     :pipeline pipe)))
+    (let ((wiring (wire-branches stages ports capacity pipe check)))
+      (setf (pipeline-threads pipe)
+            (loop for s in stages
+                  for i from 0
+                  collect (spawn-stage s
+                                       (if (zerop i) input (nth (1- i) chans))
+                                       (append (list :out (if (= i (1- n)) sink (nth i chans))
+                                                     :err err)
+                                               ;; SPAWN-STAGE closes every port
+                                               ;; it is handed, so a named port
+                                               ;; gets its EOF for free.
+                                               (loop for (stage . binding) in wiring
+                                                     when (eq stage s) append binding))
+                                       :pipeline pipe))))
     pipe))
 
 (defun join (pipeline &key errorp)
-  "Wait for every stage to finish.  With ERRORP, resignal the first failure."
+  "Wait for every stage to finish, branches included.  With ERRORP, resignal
+the first failure -- a branch's failures count as the pipeline's, since from
+outside there is one pipeline."
   (mapc (lambda (th) (ignore-errors (sb-thread:join-thread th :default nil)))
         (pipeline-threads pipeline))
-  (let ((failures (reverse (pipeline-failures pipeline))))
+  (let ((failures (append (reverse (pipeline-failures pipeline))
+                          (loop for branch in (pipeline-branches pipeline)
+                                append (ignore-errors (join branch))))))
     (when (and errorp failures)
       (error 'pipeline-error :stage (car (first failures)) :cause (cdr (first failures))))
     failures))
@@ -127,6 +194,7 @@ transform rather than a source, so CHECK-PIPELINE has nothing extra to say."
 and the teardown cascade does the rest."
   (dolist (ch (pipeline-channels pipeline)) (close-input ch))
   (close-input (pipeline-sink pipeline))
+  (dolist (branch (pipeline-branches pipeline)) (cancel branch))
   (join pipeline)
   pipeline)
 

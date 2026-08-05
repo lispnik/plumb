@@ -7,7 +7,7 @@ carrying Lisp objects, instead of processes and byte streams. SBCL only
 (`sb-thread`, `sb-mop`), no external dependencies, no Quicklisp/ocicl needed.
 
 ```
-sbcl --eval '(asdf:test-system "plumb")'   ; 211 assertions, all passing
+sbcl --eval '(asdf:test-system "plumb")'   ; 224 assertions, all passing
 make                                       ; dump bin/plumb
 sbcl --script demo.lisp
 ```
@@ -71,9 +71,14 @@ sbcl --script demo.lisp
    at a branch head) rather than a flag -- nothing can deep-copy an arbitrary
    Lisp object correctly. Sharing means a mutating branch is a data *race*,
    since `tee` sends to branches and emits onward concurrently.
-   What remains is the *general graph*: `stage-ports` is still write-only, so a
-   stage cannot route to `:left`/`:right` by content. `tee` covers one stream
-   to many; content-based demux would need `run` to wire named ports.
+   The general graph is done too: `run :ports` wires the extra ports a stage
+   declares to their own branches (`wire-branches`), and `route` is the worked
+   example. Ports carry their own types -- `:produces` describes `:out` alone
+   -- and routing stages use `try-emit`, since `emit` is strict on purpose.
+   Port names are one flat namespace per `run`; deeper graphs nest by putting a
+   routing stage inside a branch. What is left is cosmetic: `explain` can only
+   draw the ports it is handed, so `explain foo | route ...` in word mode has
+   no way to name branches yet.
 3. **External processes, the rest of it.** `sh` and `to-sh` (`src/process.lisp`)
    cover the source and sink shapes: lifetime is handled in `with-command`'s
    `unwind-protect`, and a non-zero exit signals `command-failed`, which rides
