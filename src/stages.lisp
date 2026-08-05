@@ -96,14 +96,14 @@ LSTAT rather than STAT because GLOB does not resolve symlinks, so the link
 itself is what is in the stream.  And LSTAT rather than opening the file: the
 old code called FILE-LENGTH on an open stream, which cost open+fstat+close per
 file, lost the size of anything unreadable, and blocked forever on a FIFO."
-  (let* ((native (sb-ext:native-namestring path))
-         (directory-p (null (pathname-name path)))
+  (let* ((native path)                  ; MAP-GLOB yields strings already
+         (directory-p (char= (char native (1- (length native))) #\/))
          (stat (ignore-errors (file-stat native))))
     (when stat
       (let* ((mode (fs-mode stat))
              (type (file-type-of mode)))
         (make-file-entry
-         :path path
+         :path (sb-ext:parse-native-namestring native)
          ;; FILE-NAMESTRING escapes * and [ back into the name, and LSTAT on
          ;; the escaped path then fails -- which is how files with awkward
          ;; names used to disappear from LS.  Take the basename of the string.
@@ -141,10 +141,13 @@ filesystem says even for a directory -- filter on .type rather than relying on
 a missing size to mean `not a file'."
   (:consumes nil) (:produces :objects)
   (let ((users (make-hash-table)) (groups (make-hash-table)))
-    (dolist (path (glob pattern))
-      ;; NIL when the entry vanished between the directory scan and the stat.
-      (let ((entry (stat-file-entry path users groups)))
-        (when entry (emit entry))))))
+    ;; Streamed: MAP-GLOB emits as it walks, so a downstream TAKE stops the
+    ;; walk instead of paying for a tree it will not look at.
+    (map-glob pattern
+              (lambda (path)
+                ;; NIL when the entry vanished between the scan and the stat.
+                (let ((entry (stat-file-entry path users groups)))
+                  (when entry (emit entry)))))))
 
 (defstruct line text number source)
 

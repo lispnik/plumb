@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 334 assertions
+(asdf:test-system "plumb")     ; 339 assertions
 ```
 
 ```
@@ -144,7 +144,27 @@ things without a second query language inside the pattern string.
 
 A directory lists its members with or without the trailing slash, a plain file
 names itself, and a pattern matching nothing yields nothing rather than an
-error. Results are **sorted**, so pipelines built on `ls` are reproducible.
+error.
+
+**`ls` streams.** It emits as it walks rather than globbing the tree first, so
+a downstream `take` stops the walk instead of paying for a tree it will not
+look at:
+
+```
+ls "/usr/share/**/*" | take 3     380 ms  ->  20 ms      (15,732 files)
+ls "/usr/share/**/*" | tally      370 ms      unchanged
+```
+
+Ordering therefore comes from sorting each directory as the walk reaches it,
+depth first, rather than sorting the finished result — a streamed result has no
+end at which to sort. It is still fully reproducible, and on a real tree it is
+the *same* order: over `/usr/share/man`'s 2995 entries the streamed output is
+byte-identical to what the sorting version produced. The two can differ only
+where a directory name is a prefix of a sibling file name, which puts
+`c/d.txt` before `c.txt`.
+
+`glob` yields the same order, collected — the two cannot disagree, since both
+come from `map-glob`.
 
 Globbing does **not** go through CL's `directory` and pathname patterns, which
 got five things wrong — three of them silently. `[a-c]` was the literal set

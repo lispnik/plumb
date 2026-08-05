@@ -7,7 +7,7 @@ carrying Lisp objects, instead of processes and byte streams. SBCL only
 (`sb-thread`, `sb-mop`), no external dependencies, no Quicklisp/ocicl needed.
 
 ```
-sbcl --eval '(asdf:test-system "plumb")'   ; 334 assertions, all passing
+sbcl --eval '(asdf:test-system "plumb")'   ; 339 assertions, all passing
 make                                       ; dump bin/plumb
 sbcl --script demo.lisp
 ```
@@ -67,6 +67,14 @@ sbcl --script demo.lisp
   (see `c3411ba`) and then removed: each has a pipeline equivalent, and a
   second query language inside the pattern string is the thing `where` and
   `sort-by` exist to avoid. The same argument as `ps` having no `--sort`.
+- **`ls` streams, and must keep streaming.** `map-glob` emits as it walks; a
+  downstream `take` closing the channel makes `emit` signal `channel-closed`,
+  which unwinds the callback and the walk. The early exit is the existing
+  teardown doing its job, not machinery added for it. Do not reintroduce a
+  buffer to sort the result: ordering comes from sorting each directory as
+  the walk reaches it, and `**` interleaves its two cases per entry so the
+  walk is genuinely depth first. Doing the zero-level pass first emits every
+  sibling before descending into any, which a final sort used to hide.
 - **Type checking happens before any thread is spawned** (`check-pipeline`).
   `T` on the consuming side means any object *type*, not the absence of one, so
   nothing may follow a stage that produces `nil`. Reading it the other way let

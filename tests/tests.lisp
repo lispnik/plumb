@@ -267,6 +267,68 @@ failed, and LS dropped the entry without a word."
         (sb-ext:run-program "/bin/sh" (list "-c" (format nil "rm -rf ~a" dir))
                             :search nil :wait t)))))
 
+(defun test-ls-streams ()
+  "LS emits as it walks rather than globbing the tree first, so a downstream
+TAKE stops the walk.  Before this, take 3 over /usr/share cost 380ms -- the
+same as listing all 15,732 entries."
+  (with-timeout (25 :streaming)
+    (let ((dir "/tmp/plumb-stream-test/"))
+      (unwind-protect
+           (flet ((sh (c) (sb-ext:run-program "/bin/sh" (list "-c" c) :search nil :wait t)))
+             (sh (format nil "rm -rf ~a; mkdir -p ~a" dir dir))
+             ;; Enough entries that visiting them all would be visible.
+             (sh (format nil "cd ~a && for i in $(seq 1 300); do : > f$i.txt; done" dir))
+             ;; MAP-GLOB stops when its callback transfers control out, which
+             ;; is what EMIT signalling CHANNEL-CLOSED does.
+             (let ((visited 0))
+               (block early
+                 (map-glob (concatenate 'string dir "*")
+                           (lambda (path)
+                             (declare (ignore path))
+                             (incf visited)
+                             (when (= visited 3) (return-from early)))))
+               (check (= 3 visited) :the-walk-stops-when-the-caller-does))
+             ;; End to end: TAKE gets three without the stage seeing 300.
+             (let ((seen 0))
+               (check (= 3 (length (collect-pipeline
+                                    (list (ls (concatenate 'string dir "*"))
+                                          (xform (lambda (x) (incf seen) x))
+                                          (take 3)))))
+                      :take-three-from-three-hundred)
+               ;; A channel of capacity 64 may run ahead, but nothing like 300.
+               (check (< seen 100) :the-source-did-not-walk-everything)))
+        (sb-ext:run-program "/bin/sh" (list "-c" (format nil "rm -rf ~a" dir))
+                            :search nil :wait t)))))
+
+(defun test-glob-order-is-depth-first ()
+  "Ordering now comes from sorting each directory as the walk reaches it, since
+a streamed result has no end at which to sort.
+
+** interleaves its two cases -- the rest of the pattern starting here, and **
+consuming this level -- per entry.  Running them one after the other emits
+every sibling before descending into any, which a final sort used to hide."
+  (with-timeout (25 :ordering)
+    (let ((dir "/tmp/plumb-order-test/"))
+      (unwind-protect
+           (flet ((sh (c) (sb-ext:run-program "/bin/sh" (list "-c" c) :search nil :wait t))
+                  (names (pattern)
+                    (mapcar (lambda (p) (basename (sb-ext:native-namestring p)))
+                            (glob pattern))))
+             (sh (format nil "rm -rf ~a; mkdir -p ~aa1 ~aa2" dir dir dir))
+             (sh (format nil "cd ~a && : > b.txt && : > a1/x.txt && : > a2/y.txt" dir))
+             ;; Depth first: a1 and its contents before a2, not a1 a2 then both.
+             (check (equal '("a1" "x.txt" "a2" "y.txt" "b.txt")
+                           (names (concatenate 'string dir "**/*")))
+                    :double-star-is-depth-first)
+             ;; LS and GLOB cannot disagree: both come from MAP-GLOB.
+             (check (equal (names (concatenate 'string dir "**/*"))
+                           (mapcar #'file-entry-name
+                                   (collect-pipeline
+                                    (list (ls (concatenate 'string dir "**/*"))))))
+                    :ls-and-glob-agree))
+        (sb-ext:run-program "/bin/sh" (list "-c" (format nil "rm -rf ~a" dir))
+                            :search nil :wait t)))))
+
 (defun test-glob-and-symlinks ()
   "Descending a named component follows symlinks, as a shell does; ** does not,
 so a link pointing back up cannot recurse forever.  /tmp is itself a symlink on
@@ -1228,6 +1290,8 @@ return the resulting text and point."
                   test-glob-posix-classes
                   test-glob-finds-awkward-names
                   test-glob-and-symlinks
+                  test-ls-streams
+                  test-glob-order-is-depth-first
                   test-ls-stats-rather-than-opens
                   test-alien-stat-layout-matches-sb-posix
                   test-sub-second-timestamps

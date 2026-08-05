@@ -24,7 +24,7 @@
    #:pipeline-type-error-upstream #:pipeline-type-error-downstream
    ;; built-in stages
    #:from-list #:counter #:ls #:lines #:sh #:to-sh #:glob #:ps
-   #:glob-match #:glob-pattern-p #:read-directory-names #:basename
+   #:glob-match #:glob-pattern-p #:read-directory-names #:basename #:map-glob
    #:where #:xform #:take #:drop #:uniq #:sort-by #:tally #:accumulate
    #:peek #:to-text #:print-items #:table #:to-file #:from-file #:tee #:route
    ;; external processes
