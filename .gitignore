@@ -1,6 +1,11 @@
 # The dumped SBCL image: 39 MB, and `make` rebuilds it from source.
 bin/
 
+# Vendored dependencies for plumb/crypto.  ocicl.csv pins the exact digests and
+# IS committed; the unpacked tree is a build artifact -- `ocicl install` rebuilds
+# it byte for byte from the csv.
+ocicl/
+
 # Compiled output, wherever an implementation decides to put it.
 *.fasl
 *.fas

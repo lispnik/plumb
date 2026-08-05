@@ -4,12 +4,14 @@
 
 `plumb` — an experiment in shell pipelines built from threads and channels
 carrying Lisp objects, instead of processes and byte streams. SBCL only
-(`sb-thread`, `sb-mop`), no external dependencies, no Quicklisp/ocicl needed.
+(`sb-thread`, `sb-mop`), no external dependencies, no Quicklisp/ocicl needed --
+except in `plumb/crypto`, which is optional and separate for that reason.
 
 ```
-sbcl --eval '(asdf:test-system "plumb")'   ; 339 assertions, all passing
+sbcl --eval '(asdf:test-system "plumb")'   ; 350 assertions, all passing
 make                                       ; dump bin/plumb
 sbcl --script demo.lisp
+make crypto && make test-crypto            ; the optional Ironclad system
 ```
 
 ## Design decisions already made — don't relitigate these without reason
@@ -79,6 +81,20 @@ sbcl --script demo.lisp
   `T` on the consuming side means any object *type*, not the absence of one, so
   nothing may follow a stage that produces `nil`. Reading it the other way let
   a sink follow a sink, and `explain` reported that pipeline as fine.
+  `defstage`'s `(:check FORM...)` is the same rule one level down, for a single
+  stage's arguments: the forms run in the constructor, before the declared
+  `check-type`s, so a stage can beat "not of type SUPPORTED-DIGEST" with a
+  message that says what to type instead.
+- **Ironclad is vendored in `ocicl/`,** pinned by a committed `ocicl.csv`.
+  Before that, `make crypto` resolved it out of a *neighbouring project* under
+  the user's own `(:tree "~/Projects/common-lisp/")` -- it built here and would
+  have built nowhere else. The vendored tree is listed before
+  `:inherit-configuration` so it wins.
+- **One external dependency, in one optional system.** `plumb/crypto` (Ironclad,
+  digests) is the only thing outside SBCL. `plumb`, `plumb/cli` and `make test`
+  must keep working without it. It defines into the `plumb` package rather than
+  its own, because the reader, `help` and TAB completion all read that one
+  package -- a stage in another package is not a built-in.
 
 ## Invariants to preserve
 
@@ -89,6 +105,16 @@ sbcl --script demo.lisp
    Breaking this turns `(list (counter) (take 5))` into an infinite loop.
 3. Every test is wrapped in `sb-ext:with-timeout`. Bugs here present as hangs,
    not backtraces — keep new tests time-boxed.
+4. Anything that opens a file must refuse a FIFO first. Opening one with no
+   writer blocks forever and no downstream stage can time it out; this bit `ls`
+   once and `digest` would have inherited it.
+5. `make build` and `make crypto` write the same path, so **nothing may quietly
+   pick a flavour**. Each drops a marker under `bin/` and deletes the other's,
+   and each removes `bin/plumb` first, because `program-op` skips the dump when
+   its output is newer than its inputs and would otherwise report success over
+   the wrong binary. `demo` must not depend on `build` — it did, and silently
+   replaced a crypto binary with a plain one. `--version` reports `(+crypto)`
+   by asking the stage registry, so it cannot disagree with what is in there.
 
 ## Open work, roughly in priority order
 
@@ -195,6 +221,11 @@ sbcl --script demo.lisp
 - `do-input` declares its variable `ignorable`; don't add `(declare (ignore ...))`
   inside the body, it isn't a valid declaration position there.
 - New stages go in `src/stages.lisp`, new exports in `src/package.lisp`.
+  `src/crypto.lisp` is the exception on both counts: it exports at load time,
+  since its symbols name nothing on a build without Ironclad.
+- Don't assert a census of the repository in a test. `(= 3 (length (glob
+  "src/[cf]*.lisp")))` failed the day a source file was added; assert the
+  property instead.
 - **Pad before painting.** `paint` adds SGR escapes that `~va` counts as
   visible characters, so any alignment has to be computed on the bare string
   first. `visible-width` exists for the same reason in `lineedit.lisp`.

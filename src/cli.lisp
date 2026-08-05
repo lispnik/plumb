@@ -22,6 +22,16 @@
   "Set from the ASDF system version by build.lisp, just before the image is
 dumped.  The system definition stays the one source of truth.")
 
+(defun version-string ()
+  "The version, and which flavour of binary this is.
+
+`make build` and `make crypto` write the same path, and the only way to tell
+them apart used to be the file size -- so `make demo`, which rebuilt the plain
+one, could silently take the digest stages away.  Asked of the registry rather
+than recorded at dump time, so it cannot disagree with what is actually here."
+  (format nil "plumb ~a~@[ ~a~]" *version*
+          (when (gethash 'plumb::digest plumb:*stages*) "(+crypto)")))
+
 (defvar *eof* (list :eof) "Unique marker; NIL and :EOF are both legal forms.")
 (defvar *edit* t "NIL disables line editing (--no-edit), for odd terminals.")
 
@@ -383,7 +393,7 @@ exit status: 0 ok, 1 evaluation or pipeline error, 2 usage error, 130 interrupt
   (let ((o (parse-command-line argv)))
     (ecase (opt-action o)
       (:help    (print-usage *standard-output*) 0)
-      (:version (format t "plumb ~a~%" *version*) 0)
+      (:version (format t "~a~%" (version-string)) 0)
       (:run     (run-jobs o)))))
 
 (defun main ()

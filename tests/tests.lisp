@@ -361,7 +361,13 @@ nothing."
            :star-matches-by-type)
     (check (member "field.lisp" (names (glob "src/?ield.lisp")) :test #'string=)
            :question-mark-is-one-character)
-    (check (= 3 (length (glob "src/[cf]*.lisp"))) :character-class)
+    ;; The property, not a census of src/: this used to assert a count, and
+    ;; adding one source file to the project failed a globbing test.
+    (let ((matched (names (glob "src/[cf]*.lisp"))))
+      (check (member "channel.lisp" matched :test #'string=) :character-class-first-branch)
+      (check (member "field.lisp" matched :test #'string=) :character-class-second-branch)
+      (check (every (lambda (n) (find (char n 0) "cf")) matched) :character-class-excludes)
+      (check (notany (lambda (n) (string= n "stage.lisp")) matched) :character-class-is-a-class))
     ;; ** descends, so it finds strictly more than a flat *.
     (check (> (length (glob "**/*.lisp")) (length (glob "*.lisp"))) :double-star-descends)
     ;; Shell * means anything.  CL * means "any name, no type", so an
@@ -612,6 +618,27 @@ One LSTAT does all of it and cannot block."
   (check (equal '(where ($ (or (fld :a) (search "." (fld :b)))))
                 (read-shell "where {(or .a (search \".\" .b))}"))
          :nested-accessors-and-strings-intact))
+
+(defun test-a-keyword-in-a-required-position-is-a-value ()
+  "The flag rule -- a keyword with nothing after it means :KEY T -- has to stop
+at the required arguments, or a stage whose first argument IS a keyword gets an
+odd number of &KEY arguments.  (digest :sha256) in plumb/crypto is why; SORT-BY
+is the core stage that can show it, since its KEY is declared (or function
+symbol) and a keyword is a symbol."
+  (check (equal '(sort-by :size) (read-shell "sort-by :size"))
+         :required-keyword-keeps-its-value)
+  ;; Past the required arguments the rule still applies, in the same call.
+  (check (equal '(sort-by :size :desc t) (read-shell "sort-by :size :desc"))
+         :flags-after-a-required-keyword)
+  ;; And a stage with no required arguments is unaffected.
+  (check (equal '(table :transpose t) (read-shell "table :transpose"))
+         :flag-on-a-stage-with-no-required-arguments)
+  (check (= 1 (plumb::required-argument-count 'take)) :one-required-argument)
+  (check (= 2 (plumb::required-argument-count 'accumulate)) :two-required-arguments)
+  (check (= 0 (plumb::required-argument-count 'table)) :no-required-arguments)
+  (check (= 0 (plumb::required-argument-count 'tee)) :rest-args-are-not-required)
+  ;; A word that names no stage keeps the rule it always had.
+  (check (= 0 (plumb::required-argument-count 'no-such-stage)) :unknown-word-is-zero))
 
 (defun test-reader-variables-and-globs ()
   (check (equal '(take *default-capacity*) (read-shell "take *default-capacity*"))
@@ -1298,6 +1325,7 @@ return the resulting text and point."
                   test-reader-dispatch
                   test-reader-pipeline
                   test-reader-blocks
+                  test-a-keyword-in-a-required-position-is-a-value
                   test-reader-variables-and-globs
                   test-reader-suffix-literals
                   test-reader-lisp-escape

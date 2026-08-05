@@ -17,8 +17,11 @@
                (:file "channel")
                (:file "field")
                (:file "present")
-               (:file "reader")
+               ;; STAGE before READER: the word-mode reader asks *STAGES* for a
+               ;; stage's lambda list, to tell a keyword that is a flag from a
+               ;; keyword that is a required argument.
                (:file "stage")
+               (:file "reader")
                (:file "pipeline")
                (:file "stages")
                (:file "process")
@@ -44,6 +47,16 @@
   :build-pathname "bin/plumb"
   :entry-point "plumb.cli:main")
 
+(defsystem "plumb/crypto"
+  :description "Digest stages for plumb, on top of Ironclad."
+  :author "Matthew"
+  :license "MIT"
+  :version "0.1.0"
+  :depends-on ("plumb" "ironclad")
+  :serial t
+  :components ((:module "src" :components ((:file "crypto"))))
+  :in-order-to ((test-op (test-op "plumb/crypto/tests"))))
+
 (defsystem "plumb/tests"
   :description "Test suite for plumb."
   :depends-on ("plumb/cli")             ; also covers the editor and the reader
@@ -53,3 +66,13 @@
   :perform (test-op (o c)
              (unless (uiop:symbol-call :plumb/tests '#:run-tests)
                (error "plumb test suite failed."))))
+
+(defsystem "plumb/crypto/tests"
+  :description "Test suite for the digest stages."
+  :depends-on ("plumb/crypto" "plumb/tests")
+  :serial t
+  :pathname "tests"
+  :components ((:file "crypto"))
+  :perform (test-op (o c)
+             (unless (uiop:symbol-call :plumb/tests '#:run-crypto-tests)
+               (error "plumb/crypto test suite failed."))))

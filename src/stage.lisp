@@ -65,8 +65,10 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
 ;;;
 ;;; Required parameters may be written (NAME TYPE) and get a CHECK-TYPE.
 ;;; Everything from the first lambda-list keyword onwards is an ordinary
-;;; lambda list.  Leading (:consumes X) / (:produces X) / (:ports ...) forms in
-;;; the body are declarations, not code.
+;;; lambda list.  Leading (:consumes X) / (:produces X) / (:ports ...) /
+;;; (:barrier X) / (:check FORM...) forms in the body are declarations, not
+;;; code -- all but :CHECK, whose forms become the first thing the constructor
+;;; runs.
 
 (defun %split-arglist (arglist)
   (let ((pos (position-if (lambda (x) (and (symbolp x) (eql 0 (search "&" (string x)))))
@@ -77,16 +79,23 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
 
 (defun %parse-stage-body (body)
   (let ((consumes t) (produces t) (ports '(:out :err)) (port-types '())
-        (barrier nil) (doc nil))
+        (barrier nil) (doc nil) (checks '()))
     (when (and (stringp (car body)) (cdr body))
       (setf doc (pop body)))
     (loop while (and (consp (car body))
-                     (member (caar body) '(:consumes :produces :ports :barrier)))
+                     (member (caar body) '(:consumes :produces :ports :barrier :check)))
           for form = (pop body)
           do (ecase (first form)
                (:consumes (setf consumes (second form)))
                (:produces (setf produces (second form)))
                (:barrier  (setf barrier (second form)))
+               ;; Validation that runs in the CONSTRUCTOR, not the thunk -- the
+               ;; same reason CHECK-PIPELINE runs before a thread exists.  A
+               ;; (NAME TYPE) parameter already gets a CHECK-TYPE; this is for
+               ;; the cases where "not of type SUPPORTED-DIGEST" is a worse
+               ;; message than the stage can write itself, so these forms run
+               ;; first and the declared CHECK-TYPEs are the fallback.
+               (:check (setf checks (append checks (rest form))))
                ;; (:ports :yes :no) or (:ports (:yes :bytes) :no).  A bare
                ;; name carries :OBJECTS, which is what a branch almost always
                ;; wants and what :CONSUMES already defaults to elsewhere.
@@ -100,7 +109,7 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
                         ports
                         (union (mapcar (lambda (s) (if (consp s) (first s) s)) specs)
                                '(:out :err)))))))
-    (values consumes produces ports port-types barrier doc body)))
+    (values consumes produces ports port-types barrier doc checks body)))
 
 ;;; The registry behind HELP.  DEFSTAGE knows the type signature and the
 ;;; docstring at definition time; a STAGE instance only exists once someone has
@@ -121,7 +130,8 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
   "Define a stage constructor.  Calling it returns a STAGE; running a pipeline
 is what actually spawns a thread."
   (multiple-value-bind (required rest-of-lambda-list) (%split-arglist arglist)
-    (multiple-value-bind (consumes produces ports port-types barrier doc real-body)
+    (multiple-value-bind (consumes produces ports port-types barrier doc
+                          constructor-checks real-body)
         (%parse-stage-body body)
       (let* ((req-names (mapcar (lambda (p) (if (consp p) (first p) p)) required))
              (checks (loop for p in required
@@ -144,6 +154,7 @@ is what actually spawns a thread."
                                   :documentation ,doc))
            (defun ,name (,@req-names ,@rest-of-lambda-list)
              ,@(when doc (list doc))
+             ,@constructor-checks
              ,@checks
              (make-stage :name ',name
                          :consumes ,consumes

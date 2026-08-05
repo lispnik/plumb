@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 339 assertions
+(asdf:test-system "plumb")     ; 350 assertions
 ```
 
 ```
@@ -13,6 +13,10 @@ sbcl --script demo.lisp
 make            # dump bin/plumb
 make test
 ```
+
+One optional system, `plumb/crypto`, does have a dependency -- Ironclad, for
+digests. It is a separate system so that everything above keeps working on a
+machine with no way to fetch it. See [Digests](#digests).
 
 ## The binary
 
@@ -669,6 +673,62 @@ block macro a `{...}` reader would expand to:
 ;; == (lambda (it) (> (field it :size) 1024))
 ```
 
+## Digests
+
+`plumb/crypto` is the one system with an external dependency. It adds two
+stages on top of Ironclad, and it is separate for exactly that reason: `make`,
+`make test` and `bin/plumb` must keep working where Ironclad cannot be
+installed.
+
+```
+make crypto            # bin/plumb with the digest stages baked in
+make test-crypto       # 74 assertions
+plumb --version        # says "(+crypto)" when this is that binary
+```
+
+Ironclad and its dependencies are **vendored** in `ocicl/`, pinned by
+`ocicl.csv` (committed; the unpacked tree is not). So `make crypto` needs no
+network, no Quicklisp and no dependency manager — and, more to the point, it
+cannot quietly resolve Ironclad out of some unrelated checkout that happens to
+be on your ASDF source registry. Refresh with `ocicl install ironclad`.
+
+```lisp
+(asdf:load-system "plumb/crypto")
+```
+
+A digest is an object, not a line of text -- it carries the hex, the raw
+octets, the source, and the object it was computed from, so the rest of the
+pipeline can still see the file:
+
+```
+$ plumb 'ls "src/*.lisp" | digest :sha256 | print-items'
+$ plumb 'ls "**/*" | where {(eq .type :file)} | digest :md5 | sort-by .hex | table'
+$ plumb 'digests | table'                   # the 60 algorithms Ironclad has
+$ plumb 'digests | where {(= .length 32)} | table'
+```
+
+`present` renders a digest the way `shasum(1)` writes a line -- hex, two
+spaces, name -- so the first of those diffs clean against `shasum -a 256`.
+
+Three details are deliberate:
+
+- **The algorithm is checked when the stage is built**, not when it runs, so a
+  typo is an error at the prompt rather than a condition inside a thread four
+  hundred files in. `digest :sha257` says so and points at `digests`.
+- **A file that cannot be hashed does not vanish.** It comes through as a
+  digest with a `nil` hex and a `digest-failed` in its `.error` slot, and the
+  condition also goes out the `:err` port. A checksum listing that silently
+  omits the files you would most want to know about is worse than useless;
+  filter on `.error` to separate them.
+- **A directory, a device and above all a FIFO are refused before the open.**
+  Opening a FIFO with no writer blocks forever, and nothing downstream can time
+  that out -- the same trap `ls` hit before it stopped calling `file-length`.
+
+Adding the system adds real built-ins, not a second-class namespace:
+`help digest` describes it, TAB completes it, `explain` draws it. That is why
+`src/crypto.lisp` defines into the `plumb` package -- the reader, `help` and
+completion all read that one package.
+
 ## Files
 
 | | |
@@ -684,6 +744,7 @@ block macro a `{...}` reader would expand to:
 | `src/pipeline.lisp` | wiring, spawning, teardown, type checking |
 | `src/stages.lisp` | `from-list` `counter` `ls` `lines` `where` `xform` `take` `drop` `uniq` `peek` `sort-by` `tally` `accumulate` `to-text` `print-items` `table` |
 | `src/process.lisp` | `sh` / `to-sh` / `ps`: external commands and the process table |
+| `src/crypto.lisp` | `digest` / `digests`, on Ironclad -- the `plumb/crypto` system |
 | `src/help.lisp` | `help`: the stage registry, listing and detail rendering |
 | `src/explain.lisp` | `explain`: pipeline metadata, drawn without running |
 | `src/lineedit.lisp` | raw-mode line editor: emacs keys, history, prompts |

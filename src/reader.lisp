@@ -222,20 +222,42 @@ is what keeps symbols like 1+ and x1k out of this."
 (defun keyword-token-p (token)
   (and token (plusp (length token)) (char= (char token 0) #\:)))
 
+(defun required-argument-count (name)
+  "How many arguments the stage NAME takes before its first lambda-list keyword.
+
+The reader needs this for exactly one decision.  A keyword token is normally a
+flag -- `table :transpose` means :TRANSPOSE T -- but in a required position it
+is a *value*: `digest :sha256` names an algorithm, and appending T there makes
+it an odd number of &KEY arguments.  Nothing in the token stream tells the two
+apart, so the stage's own lambda list is asked.  A word that names no stage
+counts as zero, which is the behaviour this rule always had."
+  (let ((info (and (symbolp name) (gethash name *stages*))))
+    (if info
+        (let ((arglist (si-lambda-list info)))
+          (or (position-if (lambda (x)
+                             (and (symbolp x) (eql 0 (search "&" (string x)))))
+                           arglist)
+              (length arglist)))
+        0)))
+
 (defun segment-form (tokens)
   "One | segment as a stage call.  A segment that is a single (...) form is
 that form verbatim, which is how a stage the word syntax cannot spell gets in."
   (let ((head (first tokens)))
     (if (and (null (rest tokens)) (char= (char head 0) #\())
         (read-lisp-token head)
-        (let ((name (read-lisp-token head))
-              (args '()))
+        (let* ((name (read-lisp-token head))
+               (required (required-argument-count name))
+               (args '()))
           (loop for rest on (rest tokens)
+                for index from 0
                 for token = (car rest)
                 do (push (token-form token) args)
                    ;; A shell flag carries no value, so a keyword with nothing
-                   ;; after it -- or another keyword -- means :key T.
-                   (when (and (keyword-token-p token)
+                   ;; after it -- or another keyword -- means :key T.  Only past
+                   ;; the required arguments, where a keyword is a value.
+                   (when (and (>= index required)
+                              (keyword-token-p token)
                               (or (null (cdr rest)) (keyword-token-p (cadr rest))))
                      (push t args)))
           (cons name (nreverse args))))))
