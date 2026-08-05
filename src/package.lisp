@@ -23,7 +23,7 @@
    #:check-pipeline #:pipeline-type-error #:pipeline-type-error-port
    #:pipeline-type-error-upstream #:pipeline-type-error-downstream
    ;; built-in stages
-   #:from-list #:counter #:ls #:lines #:sh #:to-sh #:glob
+   #:from-list #:counter #:ls #:lines #:sh #:to-sh #:glob #:ps
    #:where #:xform #:take #:drop #:uniq #:sort-by #:tally #:accumulate
    #:peek #:to-text #:print-items #:table #:to-file #:from-file #:tee #:route
    ;; external processes
@@ -34,14 +34,18 @@
    ;; word-mode reader (src/reader.lisp)
    #:read-shell #:shell-syntax-p #:shell-tokens
    ;; presentation (src/present.lisp)
-   #:present #:render-table #:table-columns
+   #:present #:render-table #:table-columns #:with-output-lock #:*output-lock*
    ;; terminal colour (src/ansi.lisp)
    #:+esc+ #:*color* #:color-p #:paint #:visible-width
    ;; misc
    ;; COPY-* are the escape hatch TEE documents: copying is a stage.
    #:file-entry #:make-file-entry #:copy-file-entry #:file-entry-path #:file-entry-name
    #:file-entry-size #:file-entry-mtime #:file-entry-dir-p
-   #:line #:make-line #:copy-line #:line-text #:line-number #:line-source))
+   #:line #:make-line #:copy-line #:line-text #:line-number #:line-source
+   #:process #:make-process #:copy-process #:process-pid #:process-ppid
+   #:process-user #:process-state #:process-pcpu #:process-pmem
+   #:process-rss #:process-vsz #:process-etime #:process-tty
+   #:process-name #:process-command #:process-args))
 
 ;;; Loaded only by the PLUMB/CLI system, but declared here so that every
 ;;; package in the project has one home.

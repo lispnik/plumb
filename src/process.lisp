@@ -133,3 +133,95 @@ own stdout is inherited, so `(to-sh \"wc -l\")` prints where you would expect."
           (in (sb-ext:process-input proc)))
       (do-input (x)
         (write-line (if (stringp x) x (princ-to-string x)) in)))))
+
+;;; ------------------------------------------------------------------- ps
+;;;
+;;; The data comes from ps(1); what plumb adds is that it arrives as objects,
+;;; so the columns keep their types and there is nothing to re-parse.  A native
+;;; implementation would mean /proc on Linux and sysctl plus libproc on macOS --
+;;; two lots of platform FFI to obtain what ps already prints correctly.
+;;;
+;;; BSD-style options, which GNU ps also accepts.  Each field is written with a
+;;; trailing = to suppress its header, so there is no header line to skip, and
+;;; ARGS comes last because it is the only one that can contain a space.
+
+(defstruct process
+  pid ppid user state pcpu pmem rss vsz etime tty name command args)
+
+(defmethod present ((p process))
+  (format nil "~6@a  ~a" (process-pid p) (process-name p)))
+
+(defparameter +ps-fields+
+  "pid=,ppid=,user=,state=,pcpu=,pmem=,rss=,vsz=,etime=,tty=,args=")
+
+(defconstant +ps-fixed-fields+ 10
+  "How many space-free columns precede ARGS.")
+
+(defun basename (path)
+  (let ((slash (position #\/ path :from-end t)))
+    (if slash (subseq path (1+ slash)) path)))
+
+(defun kilobytes-to-bytes (text)
+  (let ((kb (parse-integer text :junk-allowed t)))
+    (when kb (* kb 1024))))
+
+(defun parse-real (text)
+  (let ((value (ignore-errors (let ((*read-eval* nil)) (read-from-string text)))))
+    (when (realp value) value)))
+
+(defun parse-ps-line (line)
+  "One ps line as a PROCESS, or NIL if it is too short to be one."
+  (let ((fields '()) (i 0) (n (length line)))
+    (flet ((skip-spaces ()
+             (loop while (and (< i n) (char= (char line i) #\Space)) do (incf i))))
+      (dotimes (k +ps-fixed-fields+)
+        (declare (ignorable k))
+        (skip-spaces)
+        (let ((start i))
+          (loop while (and (< i n) (char/= (char line i) #\Space)) do (incf i))
+          (push (subseq line start i) fields)))
+      (skip-spaces)
+      (let ((f (nreverse fields)))
+        (when (and (= (length f) +ps-fixed-fields+) (parse-integer (first f) :junk-allowed t))
+          (let* ((args (subseq line (min i n)))
+                 (command (subseq args 0 (or (position #\Space args) (length args)))))
+            (make-process :pid   (parse-integer (nth 0 f) :junk-allowed t)
+                          :ppid  (parse-integer (nth 1 f) :junk-allowed t)
+                          :user  (nth 2 f)
+                          :state (nth 3 f)
+                          :pcpu  (parse-real (nth 4 f))
+                          :pmem  (parse-real (nth 5 f))
+                          ;; ps reports these in kilobytes.  Bytes here, so
+                          ;; that .rss and LS's .size are the same unit and one
+                          ;; 500mb literal means the same thing against both.
+                          :rss   (kilobytes-to-bytes (nth 6 f))
+                          :vsz   (kilobytes-to-bytes (nth 7 f))
+                          :etime (nth 8 f)
+                          :tty   (nth 9 f)
+                          :name  (basename command)
+                          :command command
+                          :args  args)))))))
+
+(defstage ps ()
+  "Emit a PROCESS per running process -- all of them, as `ps ax` does.
+
+There are no selection options on purpose.  Narrowing is WHERE and ordering is
+SORT-BY, which is the whole argument for objects over text: ps(1) needs -u, -e,
+--sort and -o because its output is a formatted string, and once the columns
+keep their types none of that has to exist.
+
+  ps | where {(> .rss 500mb)} | sort-by .rss :desc | take 5 | table
+  ps | tally :key .name
+  ps | where {(string= .user \"root\")} | tally
+
+RSS and VSZ are in BYTES, not the kilobytes ps prints.  Deliberately: LS
+reports .size in bytes, and a unit that changed meaning depending on which
+source produced the object would undo the reason for having objects."
+  (:consumes nil) (:produces :objects)
+  (with-command (proc (list "ps" "axo" +ps-fields+) '(:output :stream)
+                 :stderr :capture :on-exit :signal)
+    (let ((out (sb-ext:process-output proc)))
+      (loop for line = (read-line out nil nil)
+            while line
+            do (let ((process (parse-ps-line line)))
+                 (when process (emit process)))))))

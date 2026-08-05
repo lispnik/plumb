@@ -122,8 +122,9 @@ failure, so the caller can set an exit status without unwinding."
   ;; PRINT-ITEMS sink cannot drift apart -- they did once, and `| wc -l` lied.
   (plumb:each stages
               (lambda (object)
-                (write-line (plumb:present object))
-                (force-output))
+                (plumb:with-output-lock
+                  (write-line (plumb:present object))
+                  (force-output)))
               :errorp t))
 
 (defun present (value quiet)

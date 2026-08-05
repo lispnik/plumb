@@ -7,7 +7,7 @@ carrying Lisp objects, instead of processes and byte streams. SBCL only
 (`sb-thread`, `sb-mop`), no external dependencies, no Quicklisp/ocicl needed.
 
 ```
-sbcl --eval '(asdf:test-system "plumb")'   ; 224 assertions, all passing
+sbcl --eval '(asdf:test-system "plumb")'   ; 237 assertions, all passing
 make                                       ; dump bin/plumb
 sbcl --script demo.lisp
 ```
@@ -44,6 +44,10 @@ sbcl --script demo.lisp
   thread and does not inherit the caller's `*print-pretty*`, so each printer
   used to rediscover this separately — and drift. Give a type a `present`
   method rather than special-casing it at a print site.
+- **A shared stream needs `with-output-lock`.** A CL stream is not thread-safe
+  and fan-out lets several stages print at once; without it two branches
+  duplicate and drop each other's lines, differently on every run. Per line for
+  `print-items`/`peek`, around the whole render for `table`.
 - **Type checking happens before any thread is spawned** (`check-pipeline`).
   `T` on the consuming side means any object *type*, not the absence of one, so
   nothing may follow a stage that produces `nil`. Reading it the other way let

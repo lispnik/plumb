@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 224 assertions
+(asdf:test-system "plumb")     ; 237 assertions
 ```
 
 ```
@@ -272,6 +272,38 @@ calling thread, so backpressure reaches all the way back to the source.
       #'print)
 ```
 
+## ps
+
+```
+$ plumb 'ps | where {(> .rss 250mb)} | sort-by .rss :desc | table :columns (list :pid :name :rss :pcpu)'
+  pid  name                               rss  pcpu
+93597  com.apple.WebKit.WebContent  675528704   0.0
+70856  IntelliJ                     634601472   4.0
+41050  claude                       381157376   8.3
+```
+
+`ps` emits a `process` per running process — all of them, as `ps ax` does — with
+`pid ppid user state pcpu pmem rss vsz etime tty name command args`.
+
+**There are no selection options, on purpose.** Narrowing is `where`, ordering
+is `sort-by`, grouping is `tally`. That is the whole argument for objects over
+text: `ps(1)` needs `-u`, `-e`, `--sort` and `-o` because its output is a
+formatted string, and once columns keep their types none of that has to exist.
+
+```
+plumb 'ps | tally :key .name | sort-by {(fld :count)} :desc | take 5 | table'
+plumb 'ps | where {(string= .user "root")} | tally'
+```
+
+`rss` and `vsz` are in **bytes**, not the kilobytes `ps` prints — `ls` reports
+`.size` in bytes, and a unit that changed meaning depending on which source
+produced the object would undo the reason for having objects. So one `500mb`
+literal means the same thing against both.
+
+The data comes from `ps(1)`; what plumb adds is that it arrives as objects. A
+native implementation would mean `/proc` on Linux and `sysctl` plus `libproc`
+on macOS — two lots of platform FFI to obtain what `ps` already prints.
+
 ## Fan-out
 
 `tee` sends every object down each of its branches as well as onward, so one
@@ -288,6 +320,12 @@ A branch is an ordinary list of stages, run with `run :input` — the channel a
 pipeline reads from instead of starting at a source. **A branch that stops
 early is dropped and the rest carry on**; that independence is the whole point.
 A `take` *downstream* of a `tee` still tears the source down through it.
+
+Printing from parallel branches is safe: `print-items`, `peek`, `table` and the
+CLI's printer all hold one output lock, at line granularity for the first three
+and around the whole render for `table`. Without it two branches duplicated and
+dropped each other's lines, differently on every run — a CL stream is not
+thread-safe, and fan-out is what made that reachable.
 
 Objects are **shared** with the branches, not copied. Nothing can deep-copy an
 arbitrary Lisp object correctly, and every stage here produces new values
@@ -508,7 +546,7 @@ block macro a `{...}` reader would expand to:
 | `src/stage.lisp` | `defstage`, dynamic ports, `do-input`/`emit`/`finish` |
 | `src/pipeline.lisp` | wiring, spawning, teardown, type checking |
 | `src/stages.lisp` | `from-list` `counter` `ls` `lines` `where` `xform` `take` `drop` `uniq` `peek` `sort-by` `tally` `accumulate` `to-text` `print-items` `table` |
-| `src/process.lisp` | `sh` / `to-sh`: external commands, lifetime, exit status |
+| `src/process.lisp` | `sh` / `to-sh` / `ps`: external commands and the process table |
 | `src/help.lisp` | `help`: the stage registry, listing and detail rendering |
 | `src/explain.lisp` | `explain`: pipeline metadata, drawn without running |
 | `src/lineedit.lisp` | raw-mode line editor: emacs keys, history, prompts |

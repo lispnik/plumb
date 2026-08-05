@@ -450,6 +450,52 @@ nothing, so the metadata is all there while the pipeline is still inert."
   (check (equal '(ls "explain") (read-shell "ls explain")) :not-reserved-elsewhere)
   (check (equal '(explain) (read-shell "explain")) :bare-explain-is-just-a-call))
 
+(defun test-ps ()
+  "Assumes a unix ps(1).  The numbers are checked for shape and unit rather
+than value, since the process table changes under the test."
+  (with-timeout (20 :ps)
+    (let ((processes (collect-pipeline (list (ps)))))
+      (check (> (length processes) 5) :emits-the-process-table)
+      ;; This process must be in it.
+      (let ((self (find (sb-posix:getpid) processes :key #'process-pid)))
+        (check self :finds-itself)
+        (when self
+          (check (integerp (process-ppid self)) :ppid-is-an-integer)
+          (check (stringp (process-user self)) :user-is-a-string)
+          (check (realp (process-pcpu self)) :pcpu-is-a-number)
+          ;; RSS is BYTES here, not the kilobytes ps prints: LS reports .size
+          ;; in bytes, and one 10mb literal has to mean the same against both.
+          (check (> (process-rss self) (* 4 1024 1024)) :rss-is-in-bytes)
+          (check (zerop (mod (process-rss self) 1024)) :rss-came-from-kilobytes)
+          ;; NAME is COMMAND's basename -- whatever binary is running the
+          ;; suite, which is sbcl under `make test` and plumb under the binary.
+          (check (and (plusp (length (process-name self)))
+                      (not (find #\/ (process-name self))))
+                 :name-is-a-basename)
+          (check (search (process-name self) (process-command self))
+                 :name-comes-from-command)))
+      ;; FIELD works on it like any other object, so blocks and .accessors do.
+      (check (every (lambda (p) (integerp (field p :pid))) processes) :fields-work)
+      (check (member :rss (fields (first processes))) :fields-lists-the-columns))))
+
+(defun test-output-is-serialised ()
+  "Fan-out means several stages print at once, and a CL stream is not
+thread-safe: without the lock two branches duplicated and dropped each other's
+lines, differently on every run."
+  (with-timeout (20 :output-lock)
+    (let ((results '()))
+      (dotimes (trial 5)
+        (push (sort (with-output-to-string (out)
+                      (join (run (list (counter :limit 6) (route #'evenp))
+                                 :ports (list :yes (list (print-items :stream out))
+                                              :no  (list (print-items :stream out))))))
+                      #'char<)
+              results))
+      ;; Every run carries the same characters -- nothing duplicated or lost.
+      (check (= 1 (length (remove-duplicates results :test #'string=)))
+             :parallel-branches-do-not-corrupt-a-shared-stream)
+      (check (= 6 (count #\Newline (first results))) :one-line-per-object))))
+
 ;;; ------------------------------------------------------------ presenting
 
 (defun test-present ()
@@ -816,7 +862,7 @@ return the resulting text and point."
 (defun stage-named (name) (gethash name plumb::*stages*))
 
 (defun test-help-registry ()
-  (check (= 22 (hash-table-count plumb::*stages*)) :every-stage-registered)
+  (check (= 23 (hash-table-count plumb::*stages*)) :every-stage-registered)
   (check (eq :source (plumb::stage-kind (stage-named 'counter))) :counter-is-a-source)
   (check (eq :transform (plumb::stage-kind (stage-named 'where))) :where-is-a-transform)
   (check (eq :sink (plumb::stage-kind (stage-named 'print-items))) :print-items-is-a-sink)
@@ -919,6 +965,8 @@ return the resulting text and point."
                   test-reader-runs
                   test-explain
                   test-explain-reads-as-a-reserved-word
+                  test-ps
+                  test-output-is-serialised
                   test-present
                   test-table
                   test-err-port-is-shared-by-every-stage

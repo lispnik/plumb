@@ -148,7 +148,7 @@ so string keys want :TEST #'EQUAL."
   "Tap: print each object as it goes by, pass it on unchanged."
   (:consumes :objects) (:produces :objects)
   (do-input (x)
-    (format stream "~a~a~%" prefix (present x))
+    (with-output-lock (format stream "~a~a~%" prefix (present x)))
     (emit x)))
 
 ;;; A collecting stage: emits nothing until its input hits EOF.  Sorting is
@@ -206,8 +206,9 @@ hits EOF, which the type signature does not say and does not need to."
   "Print each object to STREAM, one line each.  A sink: produces nothing."
   (:consumes t) (:produces nil)
   (do-input (x)
-    (write-line (present x) stream)
-    (force-output stream)))
+    (with-output-lock
+      (write-line (present x) stream)
+      (force-output stream))))
 
 (defstage tee (&rest branches)
   "Send every object down each of BRANCHES as well as onward, so one stream

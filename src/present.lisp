@@ -15,6 +15,17 @@
 
 (in-package #:plumb)
 
+(defvar *output-lock* (sb-thread:make-mutex :name "plumb-output")
+  "Serialises writes to a shared stream.")
+
+(defmacro with-output-lock (&body body)
+  "Hold *OUTPUT-LOCK* around a write.  A CL stream is not thread-safe, and with
+fan-out several stages print at once: two PRINT-ITEMS in parallel branches
+duplicate and drop each other's lines, differently on every run.  Locking per
+line keeps branches interleaved -- which is what a shell does -- but keeps each
+line whole.  Recursive, so a stage that presents inside a locked render is fine."
+  `(sb-thread:with-recursive-lock ((the sb-thread:mutex *output-lock*)) ,@body))
+
 (defgeneric present (object)
   (:documentation "OBJECT as a single line of text, for a human to read."))
 
@@ -82,8 +93,11 @@ look absent."
                                        :key (lambda (row) (length (nth i row)))
                                        :initial-value (length header))))
          (right (mapcar (lambda (c) (numeric-column-p rows c)) columns)))
-    (write-line (paint (format-table-row headers widths right) :bold) stream)
-    (dolist (row cells)
-      (write-line (format-table-row row widths right) stream))
-    (force-output stream))
+    ;; The whole table, not each row: another branch's output must not land in
+    ;; the middle of it.
+    (with-output-lock
+      (write-line (paint (format-table-row headers widths right) :bold) stream)
+      (dolist (row cells)
+        (write-line (format-table-row row widths right) stream))
+      (force-output stream)))
   (values))
