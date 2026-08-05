@@ -20,6 +20,7 @@
                (:file "pipeline")
                (:file "stages")
                (:file "process")
+               (:file "explain")
                (:file "help"))
   :in-order-to ((test-op (test-op "plumb/tests"))))
 

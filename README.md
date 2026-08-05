@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 165 assertions
+(asdf:test-system "plumb")     ; 183 assertions
 ```
 
 ```
@@ -147,6 +147,48 @@ marker that turns red when the last form failed:
 
 Colour follows `NO_COLOR`, `TERM=dumb`, and whether output is a terminal, so
 piped output stays clean. `--no-edit` falls back to plain input.
+
+### explain
+
+`explain` draws a pipeline **without running it** — constructing a stage spawns
+nothing, so all the metadata is there while the pipeline is still inert:
+
+```
+$ plumb 'explain ls src/*.lisp | sort-by .size :desc | take 5 | table'
+
+pipeline of 4 stages, 3 channels, 4 threads
+
+  ls pattern="src/*.lisp"            source     nothing → :objects
+  │ channel, capacity 64
+  sort-by key=fn desc=t              transform  :objects → :objects
+      ⋯ barrier: emits nothing until its input ends
+  │ channel, capacity 64
+  take n=5                           transform  :objects → :objects
+  │ channel, capacity 64
+  table stream=stream max-width=40   sink       :objects → nothing
+
+types check; RUN would start it.
+```
+
+Arguments are the values the constructor was actually called with, not the
+lambda list. Drawing an **invalid** pipeline is the point rather than an edge
+case — `run` refuses one and names the pair that disagreed, while `explain`
+shows the whole shape with the bad joint marked where it sits:
+
+```
+$ plumb 'explain from-list (list 1) | to-text | where #'evenp'
+  from-list items=(1)   source     nothing → :objects
+  │ channel, capacity 64
+  to-text               transform  :objects → :bytes
+  ✗ to-text produces :bytes but where consumes :objects
+  where pred=fn         transform  :objects → :objects
+
+1 type error -- RUN would refuse this pipeline.
+```
+
+`explain` is a **reserved first word** that wraps the whole pipeline, the way
+bash's `time` does — a closed list of keywords, not a general prefix mechanism.
+From Lisp it is an ordinary function: `(explain (list (ls) (take 3)))`.
 
 `plumb --help` documents the command line; `help` documents the language:
 
@@ -367,6 +409,7 @@ block macro a `{...}` reader would expand to:
 | `src/stages.lisp` | `from-list` `counter` `ls` `lines` `where` `xform` `take` `drop` `uniq` `peek` `sort-by` `tally` `accumulate` `to-text` `print-items` `table` |
 | `src/process.lisp` | `sh` / `to-sh`: external commands, lifetime, exit status |
 | `src/help.lisp` | `help`: the stage registry, listing and detail rendering |
+| `src/explain.lisp` | `explain`: pipeline metadata, drawn without running |
 | `src/lineedit.lisp` | raw-mode line editor: emacs keys, history, prompts |
 | `src/cli.lisp` | the `plumb` executable: argument parsing, evaluation, REPL |
 | `build.lisp`, `Makefile` | `program-op` build of `bin/plumb` |

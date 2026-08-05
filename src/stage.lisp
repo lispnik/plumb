@@ -16,6 +16,7 @@
   (consumes t)                          ; :objects :bytes NIL(=source) or T(=any)
   (produces t)                          ; :objects :bytes NIL(=sink)  or T(=any)
   (ports '(:out :err))
+  (barrier nil)                         ; emits nothing until its input EOFs
   (args '()))
 
 (defmethod print-object ((s stage) stream)
@@ -62,17 +63,18 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
         (values arglist '()))))
 
 (defun %parse-stage-body (body)
-  (let ((consumes t) (produces t) (ports '(:out :err)) (doc nil))
+  (let ((consumes t) (produces t) (ports '(:out :err)) (barrier nil) (doc nil))
     (when (and (stringp (car body)) (cdr body))
       (setf doc (pop body)))
     (loop while (and (consp (car body))
-                     (member (caar body) '(:consumes :produces :ports)))
+                     (member (caar body) '(:consumes :produces :ports :barrier)))
           for form = (pop body)
           do (ecase (first form)
                (:consumes (setf consumes (second form)))
                (:produces (setf produces (second form)))
+               (:barrier  (setf barrier (second form)))
                (:ports (setf ports (union (rest form) '(:out :err))))))
-    (values consumes produces ports doc body)))
+    (values consumes produces ports barrier doc body)))
 
 ;;; The registry behind HELP.  DEFSTAGE knows the type signature and the
 ;;; docstring at definition time; a STAGE instance only exists once someone has
@@ -82,7 +84,7 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
   "Stage name -> STAGE-INFO, for HELP.  Populated by DEFSTAGE.")
 
 (defstruct (stage-info (:conc-name si-) (:copier nil))
-  name lambda-list consumes produces ports documentation)
+  name lambda-list consumes produces ports barrier documentation)
 
 (defun stage-kind (info)
   (cond ((null (si-consumes info)) :source)
@@ -93,7 +95,7 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
   "Define a stage constructor.  Calling it returns a STAGE; running a pipeline
 is what actually spawns a thread."
   (multiple-value-bind (required rest-of-lambda-list) (%split-arglist arglist)
-    (multiple-value-bind (consumes produces ports doc real-body)
+    (multiple-value-bind (consumes produces ports barrier doc real-body)
         (%parse-stage-body body)
       (let* ((req-names (mapcar (lambda (p) (if (consp p) (first p) p)) required))
              (checks (loop for p in required
@@ -111,6 +113,7 @@ is what actually spawns a thread."
                                   :consumes ,consumes
                                   :produces ,produces
                                   :ports ',ports
+                                  :barrier ,barrier
                                   :documentation ,doc))
            (defun ,name (,@req-names ,@rest-of-lambda-list)
              ,@(when doc (list doc))
@@ -119,6 +122,7 @@ is what actually spawns a thread."
                          :consumes ,consumes
                          :produces ,produces
                          :ports ',ports
+                         :barrier ,barrier
                          :args (list ,@(loop for n in all-names
                                              append (list (intern (string n) :keyword) n)))
                          :thunk (lambda () ,@real-body))))))))

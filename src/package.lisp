@@ -12,7 +12,8 @@
    ;; fields
    #:field #:fields #:$ #:fld
    ;; stages
-   #:stage #:stage-p #:stage-name #:defstage
+   #:stage #:stage-p #:stage-name #:stage-args #:stage-consumes #:stage-produces #:stage-barrier
+   #:defstage
    #:*input* #:*outputs* #:port #:emit #:finish #:do-input
    ;; pipelines
    #:pipeline #:run #:collect-pipeline #:each #:join #:cancel
@@ -26,7 +27,7 @@
    #:command-failed #:command-failed-command #:command-failed-exit-code
    #:command-failed-stderr #:emit-lines
    ;; help -- the registry's accessors stay internal; (help NAME) is the API
-   #:help #:*stages* #:stage-info
+   #:help #:explain #:*stages* #:stage-info
    ;; word-mode reader (src/reader.lisp)
    #:read-shell #:shell-syntax-p #:shell-tokens
    ;; presentation (src/present.lisp)

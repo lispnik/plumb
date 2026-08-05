@@ -243,11 +243,13 @@ is something to evaluate."
         (and (numeric-token token) t)
         (and (suffixed-number token) t))))
 
-(defun read-shell (text)
-  "Word-mode TEXT as a Lisp form."
-  (let ((segments (split-on-pipes (shell-tokens text))))
-    (unless segments (return-from read-shell nil))
-    (cond
+(defparameter +reserved-words+ '("explain")
+  "Words that wrap the whole pipeline rather than naming a stage, the way
+bash's `time` does.  A closed list of keywords -- not a general prefix
+mechanism, which would be the stage-position guessing we ruled out.")
+
+(defun shell-form (segments)
+  (cond
       ;; More than one segment is always a pipeline.
       ((rest segments) (cons 'list (mapcar #'segment-form segments)))
       ;; A lone value is that value, not a one-stage pipeline: `*default-capacity*`
@@ -258,4 +260,15 @@ is something to evaluate."
       ;; A single stage needs no LIST wrapper -- PRESENT runs a bare stage --
       ;; and must not get one: `help` returns no values, and (list (help))
       ;; would turn that into a printed NIL.
-      (t (segment-form (first segments))))))
+      (t (segment-form (first segments)))))
+
+(defun read-shell (text)
+  "Word-mode TEXT as a Lisp form."
+  (let ((segments (split-on-pipes (shell-tokens text))))
+    (unless segments (return-from read-shell nil))
+    (let ((head (first (first segments))))
+      (if (and (member head +reserved-words+ :test #'string-equal)
+               (or (rest segments) (rest (first segments))))
+          (list (read-lisp-token (string-downcase head))
+                (shell-form (cons (rest (first segments)) (rest segments))))
+          (shell-form segments)))))

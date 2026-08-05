@@ -22,6 +22,11 @@
        (sb-ext:with-timeout ,seconds ,@body)
      (sb-ext:timeout () (push (list ,label :TIMED-OUT) *failed*) :timeout)))
 
+(defmacro help-output (&body body)
+  "Capture what a command prints.  A string stream is not interactive, so PAINT
+leaves it plain and the assertions can look for bare text."
+  `(with-output-to-string (*standard-output*) ,@body))
+
 ;;; ------------------------------------------------------------- channels
 
 (defun test-channel-basics ()
@@ -325,6 +330,44 @@
                    (eval (read-shell "from-list (list \"a\" \"b\") | xform #'string-upcase"))))
            :mixed-word-and-lisp-runs)))
 
+(defun test-explain ()
+  "EXPLAIN draws a pipeline without running it -- constructing a stage spawns
+nothing, so the metadata is all there while the pipeline is still inert."
+  (with-timeout (10 :explain)
+    (let ((out (help-output (explain (list (ls "src/") (take 3))))))
+      (check (search "2 stages, 1 channel, 2 threads" out) :counts)
+      (check (search "source" out) :kind-of-the-first-stage)
+      (check (search "nothing → :objects" out) :type-signature)
+      ;; DEFSTAGE records the values the constructor was called with.
+      (check (search "pattern=\"src/\"" out) :argument-values)
+      (check (search "n=3" out) :argument-values-2)
+      (check (search "capacity 64" out) :channel-depth)
+      (check (search "types check" out) :verdict))
+    ;; An invalid pipeline still draws; the bad joint is marked in place, which
+    ;; is the point when the mismatch is several stages in.
+    (let ((out (help-output (explain (list (from-list '(1)) (to-text) (where #'evenp))))))
+      (check (search "✗" out) :mismatch-marked-inline)
+      (check (search "1 type error" out) :verdict-counts-problems)
+      (check (search "where" out) :still-draws-past-the-error))
+    ;; Barriers are declared metadata, not guessed.
+    (check (search "barrier" (help-output (explain (list (counter) (sort-by #'identity)))))
+           :barrier-is-shown)
+    (check (not (search "barrier" (help-output (explain (list (counter) (take 1))))))
+           :non-barriers-are-not)
+    (check (search "Nothing to explain" (help-output (explain '()))) :empty-pipeline)
+    ;; A lone stage is a pipeline of one.
+    (check (search "1 stage," (help-output (explain (take 1)))) :single-stage)))
+
+(defun test-explain-reads-as-a-reserved-word ()
+  "EXPLAIN wraps the whole pipeline, the way bash's `time` does."
+  (check (equal '(explain (list (ls) (take 3))) (read-shell "explain ls | take 3"))
+         :explain-wraps-the-pipeline)
+  (check (equal '(explain (ls "src/")) (read-shell "explain ls src/"))
+         :explain-wraps-a-single-stage)
+  ;; Only as the first word, and only with something to wrap.
+  (check (equal '(ls "explain") (read-shell "ls explain")) :not-reserved-elsewhere)
+  (check (equal '(explain) (read-shell "explain")) :bare-explain-is-just-a-call))
+
 ;;; ------------------------------------------------------------ presenting
 
 (defun test-present ()
@@ -573,11 +616,6 @@ return the resulting text and point."
 
 (defun stage-named (name) (gethash name plumb::*stages*))
 
-(defmacro help-output (&body body)
-  "Capture what HELP prints.  A string stream is not interactive, so PAINT
-leaves it plain and the assertions can look for bare text."
-  `(with-output-to-string (*standard-output*) ,@body))
-
 (defun test-help-registry ()
   (check (= 18 (hash-table-count plumb::*stages*)) :every-stage-registered)
   (check (eq :source (plumb::stage-kind (stage-named 'counter))) :counter-is-a-source)
@@ -669,6 +707,8 @@ leaves it plain and the assertions can look for bare text."
                   test-reader-lisp-escape
                   test-reader-pipes-do-not-split-everything
                   test-reader-runs
+                  test-explain
+                  test-explain-reads-as-a-reserved-word
                   test-present
                   test-table
                   test-err-port-is-shared-by-every-stage

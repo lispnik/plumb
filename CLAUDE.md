@@ -7,7 +7,7 @@ carrying Lisp objects, instead of processes and byte streams. SBCL only
 (`sb-thread`, `sb-mop`), no external dependencies, no Quicklisp/ocicl needed.
 
 ```
-sbcl --eval '(asdf:test-system "plumb")'   ; 165 assertions, all passing
+sbcl --eval '(asdf:test-system "plumb")'   ; 183 assertions, all passing
 make                                       ; dump bin/plumb
 sbcl --script demo.lisp
 ```
@@ -129,6 +129,10 @@ sbcl --script demo.lisp
      alternative is dropping the bare shorthand and always writing `{.size}`,
      which trades a common convenience for a rare one. A lone `.` is below the
      two-character threshold, so `ls .` is a path.
+   - **Reserved words wrap the whole pipeline.** `explain ls | take 5` reads as
+     `(explain (list (ls) (take 5)))`, the way bash's `time` does. This is a
+     closed list (`+reserved-words+`), not a general prefix mechanism -- the
+     latter would be the stage-position guessing ruled out above.
    - **`sh` stays explicit.** No falling back to an external command when the
      first word is not a known stage. That fallback is what shells do, but it
      is a lookup rule, and under it a mistyped stage name silently becomes a
@@ -136,7 +140,9 @@ sbcl --script demo.lisp
 
 ## Conventions
 
-- `defstage` declares `(:consumes X) (:produces X)` right after the docstring.
+- `defstage` declares `(:consumes X) (:produces X)` right after the docstring,
+  and `(:barrier t)` if it emits nothing until its input EOFs -- `explain`
+  shows that, and it cannot be derived from the type signature.
 - `emit` and `finish` are macros — never `#'emit`.
 - `do-input` declares its variable `ignorable`; don't add `(declare (ignore ...))`
   inside the body, it isn't a valid declaration position there.

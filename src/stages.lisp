@@ -157,7 +157,7 @@ so string keys want :TEST #'EQUAL."
 (defstage sort-by ((key (or function symbol)) &key desc (predicate nil))
   "Sort the whole stream by KEY.  A barrier: nothing is emitted until the input
 hits EOF, which the type signature does not say and does not need to."
-  (:consumes :objects) (:produces :objects)
+  (:consumes :objects) (:produces :objects) (:barrier t)
   (let ((key (ensure-fn key))
         (buf (make-array 16 :adjustable t :fill-pointer 0))
         (pred (or predicate #'default-lessp)))
@@ -175,7 +175,7 @@ hits EOF, which the type signature does not say and does not need to."
 
 (defstage tally (&key key)
   "Count objects (per KEY, if given) and emit the totals at EOF."
-  (:consumes :objects) (:produces :objects)
+  (:consumes :objects) (:produces :objects) (:barrier t)
   (if key
       (let ((counts (make-hash-table :test #'equal))
             (key (ensure-fn key)))
@@ -187,7 +187,7 @@ hits EOF, which the type signature does not say and does not need to."
 
 (defstage accumulate ((fn (or function symbol)) initial)
   "Fold the stream, emitting one result at EOF."
-  (:consumes :objects) (:produces :objects)
+  (:consumes :objects) (:produces :objects) (:barrier t)
   (let ((fn (ensure-fn fn)) (acc initial))
     (do-input (x) (setf acc (funcall fn acc x)))
     (emit acc)))
@@ -213,7 +213,7 @@ hits EOF, which the type signature does not say and does not need to."
   "Buffer the whole stream, then print it as an aligned table.  A barrier, like
 SORT-BY and for the same reason: a column cannot be sized until the last row
 has arrived.  COLUMNS defaults to the union of FIELDS across the rows."
-  (:consumes :objects) (:produces nil)
+  (:consumes :objects) (:produces nil) (:barrier t)
   (let ((rows (make-array 16 :adjustable t :fill-pointer 0)))
     (do-input (x) (vector-push-extend x rows))
     (render-table (coerce rows 'list)
