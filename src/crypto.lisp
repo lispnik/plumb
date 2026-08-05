@@ -190,13 +190,19 @@ KEY picks what to hash out of each object, the way SORT-BY and UNIQ take one.
 Without it the object itself is hashed: a FILE-ENTRY hashes the file, a LINE
 its text, a string its own characters.
 
+:WORKERS runs that many threads over one input.  Hashing is the case this was
+built for -- it is CPU-bound and per-object, so eight workers use eight cores --
+and it is genuinely safe here because every piece of per-object state is created
+inside the stage body.  Output arrives in COMPLETION order, not input order;
+add a SORT-BY when that matters.
+
 A file that cannot be read does not disappear -- it comes through as a DIGEST
 with a NIL hex and a DIGEST-FAILED in its ERROR slot, and the condition also
 goes out the :ERR port.  Filter on .error to separate them.
 
   ls \"src/*.lisp\" | digest :sha256 | print-items
   ls \"**/*\" | where {.type :file} | digest :md5 | sort-by {.hex} | table"
-  (:consumes :objects) (:produces :objects)
+  (:consumes :objects) (:produces :objects) (:parallel t)
   ;; Before the declared CHECK-TYPE, which would otherwise report a typo as
   ;; "not of type (SATISFIES SUPPORTED-DIGEST-P)" -- true, and no help at all
   ;; to someone who just wants to know what to type instead.

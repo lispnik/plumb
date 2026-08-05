@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 350 assertions
+(asdf:test-system "plumb")     ; 407 assertions
 ```
 
 ```
@@ -408,6 +408,46 @@ every shared-stream write funnels through, so a single hook there is the whole
 mechanism. When stderr is not a terminal there is no cursor motion at all —
 just one static block of totals at the end.
 
+## workers
+
+One thread per stage is the default. A stage that declares itself safe can run
+under several, sharing one input channel:
+
+```
+$ plumb 'ls "/usr/share/**/*" | where {(eq .type :file)} | digest :md5 | tally'
+15729                                                              # 4.22s
+$ plumb 'ls "/usr/share/**/*" | where {(eq .type :file)} | digest :md5 :workers 8 | tally'
+15729                                                              # 0.83s
+```
+
+5× on 8 cores, same 15,729 objects. No scheduler was written for this: `recv`
+already dequeues under the channel's mutex, so N workers pulling from one
+channel *is* the work distribution.
+
+**Output is in completion order, not input order.** That is a promise, not an
+accident — no reorder buffer, no sequence numbers threaded through your objects,
+no head-of-line blocking when one worker gets a slow file. Add a `sort-by` when
+order matters. `explain` says so on any stage you have given workers to:
+
+```
+  digest algorithm=:md5   transform  :objects → :objects
+      ×8 workers: output is in completion order, not input order
+```
+
+**It is opt-in per stage**, declared with `(:parallel t)` next to `(:barrier t)`,
+because the unsafe cases fail *silently*: `take` and `drop` mutate the
+constructor's own parameter, `uniq`'s seen-set would quietly become per-worker,
+a barrier is sequential by definition, and a source would emit everything N
+times. So `take 5 :workers 4` is an error rather than a wrong answer. Today
+`xform`, `where` and `digest` declare it; for `xform` and `where` the guarantee
+is inherited from the function you pass, not granted by the stage.
+
+**When it does not pay.** Only per-object work that dominates channel overhead.
+`where {(> .size 1kb)}` costs less than one mutex acquisition, so workers make
+it slower — the single channel mutex is the ceiling. This is the opposite lever
+from stage fusion, and they are complementary: fuse the cheap stages,
+parallelise the expensive one.
+
 ## Shape
 
 A **stage** is a closure with a type signature. It contains no concurrency at
@@ -740,7 +780,7 @@ installed.
 
 ```
 make crypto            # bin/plumb with the digest stages baked in
-make test-crypto       # 74 assertions
+make test-crypto       # 79 assertions
 plumb --version        # says "(+crypto)" when this is that binary
 ```
 

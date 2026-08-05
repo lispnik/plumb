@@ -7,13 +7,15 @@
    ;; channels
    #:channel #:make-channel #:channel-p #:channel-passed #:channel-last
    #:channel-count #:channel-capacity #:channel-name
-   #:send #:recv #:close-output #:close-input
+   #:send #:recv #:close-output #:close-input #:abort-input
+   #:channel-producers #:channel-consumers
    #:channel-closed #:channel-closed-channel
    #:*default-capacity*
    ;; fields
    #:field #:fields #:$ #:fld
    ;; stages
    #:stage #:stage-p #:stage-name #:stage-args #:stage-consumes #:stage-produces #:stage-barrier
+   #:stage-parallel #:stage-workers
    #:defstage
    #:*input* #:*outputs* #:port #:emit #:try-emit #:finish #:do-input
    #:stage-ports #:stage-port-types #:extra-ports #:port-type

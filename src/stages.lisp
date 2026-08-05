@@ -171,16 +171,25 @@ an external process's stdout enters the object world."
 ;;; ------------------------------------------------------------- transforms
 
 (defstage where ((pred (or function symbol)))
-  "Pass through only the objects satisfying PRED."
-  (:consumes :objects) (:produces :objects)
+  "Pass through only the objects satisfying PRED.
+
+:WORKERS runs PRED in that many threads.  The safety of that is inherited from
+PRED, not granted by this stage: a closure counting what it has seen is a race
+under two workers.  Order is not preserved either, so this is worth reaching
+for only when PRED is expensive -- a plain field comparison costs less than the
+channel mutex, and workers would make it slower."
+  (:consumes :objects) (:produces :objects) (:parallel t)
   (let ((pred (ensure-fn pred)))
     (do-input (x)
       (when (funcall pred x)
         (emit x)))))
 
 (defstage xform ((fn (or function symbol)))
-  "Apply FN to each object."
-  (:consumes :objects) (:produces :objects)
+  "Apply FN to each object.
+
+:WORKERS runs FN in that many threads, with the same caveat as WHERE: the
+guarantee is FN's, not this stage's, and output arrives in completion order."
+  (:consumes :objects) (:produces :objects) (:parallel t)
   (let ((fn (ensure-fn fn)))
     (do-input (x)
       (emit (funcall fn x)))))

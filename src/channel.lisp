@@ -28,6 +28,10 @@ a producer runs at most this many objects ahead of its consumer.")
   ;; for an ordinary channel; RUN raises it for the :err port, which every
   ;; stage in a pipeline sends to.
   (producers 1 :type fixnum)
+  ;; And the mirror of it on the reading side, for a stage running under several
+  ;; workers.  They share one input channel, so the first worker to reach EOF
+  ;; must not send SIGPIPE upstream and starve its siblings.
+  (consumers 1 :type fixnum)
   (producer-closed nil)
   (consumer-closed nil)
   ;; Instrumentation, for WATCH.  PASSED is a word so SEND can bump it with
@@ -122,16 +126,39 @@ condition would be delivered into a buffer whose reader had already stopped."
       (sb-thread:condition-broadcast (channel-not-empty ch))))
   ch)
 
+(defun %shut-input (ch)
+  "Set the SIGPIPE flag and drop the buffer.  Caller holds the lock.  Those
+objects may be large and nothing is ever going to look at them again -- LAST
+goes with them, for the same reason."
+  (setf (channel-consumer-closed ch) t
+        (channel-head ch) nil
+        (channel-tail ch) nil
+        (channel-last ch) nil
+        (channel-count ch) 0)
+  (sb-thread:condition-broadcast (channel-not-full ch))
+  (sb-thread:condition-broadcast (channel-not-empty ch)))
+
 (defun close-input (ch)
-  "Consumer side: stop.  Wakes any producer parked on a full channel so it can
-signal CHANNEL-CLOSED.  The buffer is dropped -- those objects may be large and
-nothing is ever going to look at them again."
+  "Consumer side: no more reading FROM ME.  Wakes any producer parked on a full
+channel so it can signal CHANNEL-CLOSED -- but only once the last consumer has
+closed, which is the exact mirror of CLOSE-OUTPUT and exists for the same kind
+of reason: a stage running under several workers shares one input channel, and
+the first worker to finish must not tear the upstream down under the others.
+
+With one consumer -- every stage until you ask for more -- the count reaches
+zero on this call, so (finish) and ordinary EOF behave exactly as before."
   (sb-thread:with-mutex ((channel-lock ch))
-    (setf (channel-consumer-closed ch) t
-          (channel-head ch) nil
-          (channel-tail ch) nil
-          (channel-last ch) nil
-          (channel-count ch) 0)
-    (sb-thread:condition-broadcast (channel-not-full ch))
-    (sb-thread:condition-broadcast (channel-not-empty ch)))
+    (when (plusp (channel-consumers ch))
+      (decf (channel-consumers ch)))
+    (when (zerop (channel-consumers ch))
+      (%shut-input ch)))
+  ch)
+
+(defun abort-input (ch)
+  "Stop this channel now, whatever the consumer count says.  This is CANCEL's
+tool: ^C means every channel dies at once, and against a stage with eight
+workers a decrement would only retire one of them."
+  (sb-thread:with-mutex ((channel-lock ch))
+    (setf (channel-consumers ch) 0)
+    (%shut-input ch))
   ch)

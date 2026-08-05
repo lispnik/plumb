@@ -289,6 +289,32 @@ name.  Compared against shasum itself so the claim is not self-referential."
 
 ;;; --------------------------------------------------------- integration
 
+(defun test-digest-under-workers ()
+  "DIGEST is the case :WORKERS was built for -- CPU-bound and per-object -- and
+it is safe because every piece of per-object state is made inside the stage
+body.  What must hold is that the answers do not depend on the worker count."
+  (with-timeout (60 :digest-workers)
+    (with-digest-fixture (dir)
+      (let ((one (collect-pipeline (list (ls (concatenate 'string dir "*.txt"))
+                                         (digest :sha256))))
+            (many (collect-pipeline (list (ls (concatenate 'string dir "*.txt"))
+                                          (digest :sha256 :workers 4)))))
+        (check (= (length one) (length many)) :same-count)
+        ;; Same set of (source . hex) pairs; the ORDER is explicitly not promised.
+        (flet ((pairs (ds) (sort (mapcar (lambda (d) (format nil "~a ~a"
+                                                             (digest-source d)
+                                                             (digest-hex d)))
+                                         ds)
+                                 #'string<)))
+          (check (equal (pairs one) (pairs many)) :same-digests-whatever-the-worker-count)))
+      ;; A file that cannot be hashed still comes through under workers, and
+      ;; still does not take the other workers down with it.
+      (let ((results (collect-pipeline (list (ls (concatenate 'string dir "*"))
+                                             (digest :sha256 :workers 4)))))
+        (check (find-if #'digest-error results) :failures-survive-parallelism)
+        (check (find-if #'digest-hex results) :successes-survive-alongside-them))))
+  (check (stage-parallel (digest :md5)) :digest-declares-parallel))
+
 (defun test-digest-is-a-first-class-builtin ()
   "The reason crypto.lisp defines into PLUMB rather than a package of its own:
 HELP, the reader and TAB completion all read PLUMB's registry and export list."
@@ -328,6 +354,7 @@ transform -- and CHECK-PIPELINE says so before a thread exists."
                   test-digest-errors-reach-the-err-port
                   test-digest-presentation-matches-shasum
                   test-digests-listing
+                  test-digest-under-workers
                   test-digest-is-a-first-class-builtin
                   test-digest-typing))
       (format t "~&; ~a~%" fn)

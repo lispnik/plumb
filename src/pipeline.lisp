@@ -62,7 +62,7 @@ clear error instead of a deadlock or a type error 400 items in."
     (sb-thread:with-mutex ((pipeline-lock pipeline))
       (push (cons (stage-name stage) condition) (pipeline-failures pipeline)))))
 
-(defun spawn-stage (stage in outs &key pipeline)
+(defun spawn-stage (stage in outs &key pipeline (worker 0))
   (sb-thread:make-thread
    (lambda ()
      (let ((*input* in)
@@ -85,8 +85,12 @@ clear error instead of a deadlock or a type error 400 items in."
          (loop for (nil ch) on outs by #'cddr
                do (unless (or (null ch) (channel-discard ch))
                     (close-output ch)))
+         ;; Refcounted on both sides now, so with several workers the last one
+         ;; out does the closing and the others just retire.
          (when in (close-input in)))))
-   :name (format nil "plumb:~a" (stage-name stage))))
+   :name (if (plusp worker)
+             (format nil "plumb:~a/~d" (stage-name stage) worker)
+             (format nil "plumb:~a" (stage-name stage)))))
 
 (defun extra-ports (stage)
   "The output ports beyond :OUT and :ERR that STAGE declared."
@@ -123,6 +127,7 @@ shell wants; anything deeper nests by putting a routing stage inside a branch."
                    (error 'pipeline-type-error :upstream stage :downstream head
                                                :port port))))
              (let ((channel (make-channel :capacity capacity
+                                          :producers (stage-workers stage)
                                           :name (format nil "~a:~(~a~)"
                                                         (stage-name stage) port))))
                (push (run branch :input channel :capacity capacity :check check)
@@ -147,6 +152,7 @@ a stage declared with (:ports ...).  See WIRE-BRANCHES."
   (assert stages () "Empty pipeline.")
   (when check (check-pipeline stages))
   (let* ((n (length stages))
+         (workers (mapcar #'stage-workers stages))
          (chans (loop repeat (1- n)
                       for i from 0
                       collect (make-channel :capacity capacity
@@ -156,24 +162,42 @@ a stage declared with (:ports ...).  See WIRE-BRANCHES."
          (sink (or sink (make-channel :discard t :name "sink")))
          (err (or err (make-channel :discard t :name "err")))
          (pipe (make-pipeline :stages stages :channels chans :sink sink :err err)))
-    ;; Every stage may SEND to :err, so it owes N closes before it is EOF.
-    ;; RUN takes ownership of the channel's producer count; a channel shared
+    ;; Refcounts.  Every thread that will ever SEND to a channel owes it one
+    ;; CLOSE-OUTPUT, and every thread that will ever RECV owes it one
+    ;; CLOSE-INPUT -- so both counts are thread counts, not stage counts.
+    ;; Getting either wrong shows up as a pipeline that hangs or as EOF
+    ;; arriving while somebody is still writing.
+    (loop for ch in chans
+          for i from 0
+          do (setf (channel-producers ch) (nth i workers)
+                   (channel-consumers ch) (nth (1+ i) workers)))
+    (setf (channel-producers sink) (car (last workers)))
+    (when input
+      (setf (channel-consumers input) (first workers)))
+    ;; Every stage may SEND to :err, so it owes one close per *thread*.  RUN
+    ;; takes ownership of the channel's producer count; a channel shared
     ;; between two pipelines needs the caller to account for both.
-    (setf (channel-producers err) n)
+    (setf (channel-producers err) (reduce #'+ workers))
     (let ((wiring (wire-branches stages ports capacity pipe check)))
       (setf (pipeline-threads pipe)
             (loop for s in stages
                   for i from 0
-                  collect (spawn-stage s
-                                       (if (zerop i) input (nth (1- i) chans))
-                                       (append (list :out (if (= i (1- n)) sink (nth i chans))
-                                                     :err err)
-                                               ;; SPAWN-STAGE closes every port
-                                               ;; it is handed, so a named port
-                                               ;; gets its EOF for free.
-                                               (loop for (stage . binding) in wiring
-                                                     when (eq stage s) append binding))
-                                       :pipeline pipe))))
+                  append (let ((in (if (zerop i) input (nth (1- i) chans)))
+                               (outs (append (list :out (if (= i (1- n)) sink (nth i chans))
+                                                   :err err)
+                                             ;; SPAWN-STAGE closes every port
+                                             ;; it is handed, so a named port
+                                             ;; gets its EOF for free.
+                                             (loop for (stage . binding) in wiring
+                                                   when (eq stage s) append binding))))
+                           ;; Every worker of a stage shares one input and one
+                           ;; set of outputs.  RECV under the channel mutex is
+                           ;; what distributes the work, so there is no
+                           ;; scheduler here and none is needed.
+                           (loop for w from 1 to (stage-workers s)
+                                 collect (spawn-stage s in outs :pipeline pipe
+                                                      :worker (if (= 1 (stage-workers s))
+                                                                  0 w)))))))
     pipe))
 
 (defun join (pipeline &key errorp)
@@ -191,9 +215,13 @@ outside there is one pipeline."
 
 (defun cancel (pipeline)
   "Ctrl-C.  Closing the first channel from the consumer side starves the source,
-and the teardown cascade does the rest."
-  (dolist (ch (pipeline-channels pipeline)) (close-input ch))
-  (close-input (pipeline-sink pipeline))
+and the teardown cascade does the rest.
+
+ABORT-INPUT rather than CLOSE-INPUT: the latter is refcounted, and against a
+stage running eight workers a single decrement would retire one of them and
+leave the other seven reading."
+  (dolist (ch (pipeline-channels pipeline)) (abort-input ch))
+  (abort-input (pipeline-sink pipeline))
   (dolist (branch (pipeline-branches pipeline)) (cancel branch))
   (join pipeline)
   pipeline)

@@ -8,7 +8,7 @@ carrying Lisp objects, instead of processes and byte streams. SBCL only
 except in `plumb/crypto`, which is optional and separate for that reason.
 
 ```
-sbcl --eval '(asdf:test-system "plumb")'   ; 350 assertions, all passing
+sbcl --eval '(asdf:test-system "plumb")'   ; 407 assertions, all passing
 make                                       ; dump bin/plumb
 sbcl --script demo.lisp
 make crypto && make test-crypto            ; the optional Ironclad system
@@ -93,6 +93,22 @@ make crypto && make test-crypto            ; the optional Ironclad system
   the walk reaches it, and `**` interleaves its two cases per entry so the
   walk is genuinely depth first. Doing the zero-level pass first emits every
   sibling before descending into any, which a final sort used to hide.
+- **Parallelism is opt-in, because the unsafe cases fail silently.** A stage
+  declares `(:parallel t)` and `defstage` gives it `&key (workers 1)`; `run`
+  then spawns that many threads sharing one input. Nothing about a thunk says
+  whether two copies of it are sound -- `take` mutates the constructor's own
+  parameter, `uniq`'s `seen` would become per-worker, a barrier is sequential,
+  a source would emit everything N times -- and every one of those is a wrong
+  answer rather than an error. Do not try to infer it.
+- **`channel-consumers` mirrors `channel-producers`,** and `close-input` is
+  refcounted the way `close-output` already was: N workers share one input, so
+  the first to finish must not SIGPIPE the rest. `abort-input` is separate and
+  unconditional because `cancel` means *now* -- against eight workers a
+  decrement retires one and leaves seven reading.
+- **Both refcounts are thread counts, not stage counts.** `run` sets a
+  channel's `producers` from the upstream stage's worker count and `consumers`
+  from the downstream one; `:err` gets the total across the pipeline. Getting
+  either wrong is a hang, or EOF delivered while somebody is still writing.
 - **Type checking happens before any thread is spawned** (`check-pipeline`).
   `T` on the consuming side means any object *type*, not the absence of one, so
   nothing may follow a stage that produces `nil`. Reading it the other way let
@@ -139,7 +155,8 @@ make crypto && make test-crypto            ; the optional Ironclad system
 ## Open work, roughly in priority order
 
 1. **Stage fusion.** `where`, `xform`, `take` and other simple transducers should
-   collapse into one thread. A thread per stage is fine at 6 stages; it is not
+   collapse into one thread. Note this is the opposite lever from `:workers`,
+   not a competitor to it: fuse the cheap stages, parallelise the expensive one. A thread per stage is fine at 6 stages; it is not
    fine when a loop spawns a pipeline per file. Needs a `fusable-p` flag on
    `stage` and a pass in `run` that composes thunks.
 2. **Fan-out, the rest of it.** `tee` (`src/stages.lisp`) fans one stream into

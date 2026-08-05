@@ -79,7 +79,11 @@ PORTS is RUN's port plist, so a graph draws as the graph it is.  No values."
         (format stream "~&~a~%~%"
                 (paint (format nil "pipeline of ~d stage~:p, ~d channel~:p, ~d thread~:p~
 ~@[, ~d named port~:p~]"
-                               n (1- n) n (when (plusp branch-count) branch-count))
+                               n (1- n)
+                               ;; Threads, not stages: a stage with :WORKERS 8
+                               ;; is eight of them sharing one input channel.
+                               (reduce #'+ stages :key #'stage-workers)
+                               (when (plusp branch-count) branch-count))
                        :bold)))
       (loop for stage in stages
             for label in labels
@@ -95,6 +99,11 @@ PORTS is RUN's port plist, so a graph draws as the graph it is.  No values."
                (when (stage-barrier stage)
                  (format stream "  ~a~%"
                          (paint "    ⋯ barrier: emits nothing until its input ends"
+                                :yellow)))
+               (when (> (stage-workers stage) 1)
+                 (format stream "  ~a~%"
+                         (paint (format nil "    ×~d workers: output is in completion order, not input order"
+                                        (stage-workers stage))
                                 :yellow)))
                (cond
                  ;; A sink has no :out worth drawing; anything else feeds the

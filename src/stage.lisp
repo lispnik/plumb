@@ -20,6 +20,11 @@
   ;; the graph would be untyped exactly where it branches.
   (port-types '())
   (barrier nil)                         ; emits nothing until its input EOFs
+  ;; PARALLEL says the body is safe to run in several copies over one input;
+  ;; WORKERS is how many the caller asked for.  Two fields, because "may be"
+  ;; and "is" are different facts and EXPLAIN wants to show both.
+  (parallel nil)
+  (workers 1 :type (integer 1))
   (args '()))
 
 (defmethod print-object ((s stage) stream)
@@ -79,16 +84,25 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
 
 (defun %parse-stage-body (body)
   (let ((consumes t) (produces t) (ports '(:out :err)) (port-types '())
-        (barrier nil) (doc nil) (checks '()))
+        (barrier nil) (parallel nil) (doc nil) (checks '()))
     (when (and (stringp (car body)) (cdr body))
       (setf doc (pop body)))
     (loop while (and (consp (car body))
-                     (member (caar body) '(:consumes :produces :ports :barrier :check)))
+                     (member (caar body)
+                             '(:consumes :produces :ports :barrier :parallel :check)))
           for form = (pop body)
           do (ecase (first form)
                (:consumes (setf consumes (second form)))
                (:produces (setf produces (second form)))
                (:barrier  (setf barrier (second form)))
+               ;; Opt-in, and deliberately not inferable.  Nothing about a
+               ;; thunk says whether running two copies of it over one input is
+               ;; sound: TAKE mutates the constructor's own parameter, UNIQ's
+               ;; SEEN would quietly become per-worker, a barrier is sequential
+               ;; by definition, and a source would emit everything N times.
+               ;; Those failures are silent, so the declaration is a claim the
+               ;; stage's author makes, not something DEFSTAGE works out.
+               (:parallel (setf parallel (second form)))
                ;; Validation that runs in the CONSTRUCTOR, not the thunk -- the
                ;; same reason CHECK-PIPELINE runs before a thread exists.  A
                ;; (NAME TYPE) parameter already gets a CHECK-TYPE; this is for
@@ -109,7 +123,7 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
                         ports
                         (union (mapcar (lambda (s) (if (consp s) (first s) s)) specs)
                                '(:out :err)))))))
-    (values consumes produces ports port-types barrier doc checks body)))
+    (values consumes produces ports port-types barrier parallel doc checks body)))
 
 ;;; The registry behind HELP.  DEFSTAGE knows the type signature and the
 ;;; docstring at definition time; a STAGE instance only exists once someone has
@@ -119,7 +133,7 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
   "Stage name -> STAGE-INFO, for HELP.  Populated by DEFSTAGE.")
 
 (defstruct (stage-info (:conc-name si-) (:copier nil))
-  name lambda-list consumes produces ports port-types barrier documentation)
+  name lambda-list consumes produces ports port-types barrier parallel documentation)
 
 (defun stage-kind (info)
   (cond ((null (si-consumes info)) :source)
@@ -130,7 +144,7 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
   "Define a stage constructor.  Calling it returns a STAGE; running a pipeline
 is what actually spawns a thread."
   (multiple-value-bind (required rest-of-lambda-list) (%split-arglist arglist)
-    (multiple-value-bind (consumes produces ports port-types barrier doc
+    (multiple-value-bind (consumes produces ports port-types barrier parallel doc
                           constructor-checks real-body)
         (%parse-stage-body body)
       (let* ((req-names (mapcar (lambda (p) (if (consp p) (first p) p)) required))
@@ -141,19 +155,32 @@ is what actually spawns a thread."
                                 (loop for x in rest-of-lambda-list
                                       unless (and (symbolp x)
                                                   (eql 0 (search "&" (string x))))
-                                        collect (if (consp x) (first x) x)))))
+                                        collect (if (consp x) (first x) x))))
+             ;; A parallel stage gets :WORKERS for free rather than each one
+             ;; declaring it: that way `digest :sha256 :workers 8` parses in
+             ;; word mode, HELP documents it, and no stage can spell it
+             ;; differently from the next.
+             (tail (if parallel
+                       (append rest-of-lambda-list
+                               (if (find '&key rest-of-lambda-list)
+                                   '((workers 1))
+                                   '(&key (workers 1))))
+                       rest-of-lambda-list)))
         `(progn
            (setf (gethash ',name *stages*)
                  (make-stage-info :name ',name
-                                  :lambda-list ',arglist
+                                  :lambda-list ',(append required tail)
                                   :consumes ,consumes
                                   :produces ,produces
                                   :ports ',ports
                                   :port-types ',port-types
                                   :barrier ,barrier
+                                  :parallel ,parallel
                                   :documentation ,doc))
-           (defun ,name (,@req-names ,@rest-of-lambda-list)
+           (defun ,name (,@req-names ,@tail)
              ,@(when doc (list doc))
+             ,@(when parallel
+                 '((check-type workers (integer 1))))
              ,@constructor-checks
              ,@checks
              (make-stage :name ',name
@@ -162,6 +189,8 @@ is what actually spawns a thread."
                          :ports ',ports
                          :port-types ',port-types
                          :barrier ,barrier
+                         :parallel ,parallel
+                         :workers ,(if parallel 'workers 1)
                          :args (list ,@(loop for n in all-names
                                              append (list (intern (string n) :keyword) n)))
                          :thunk (lambda () ,@real-body))))))))

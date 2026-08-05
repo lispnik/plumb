@@ -1338,6 +1338,145 @@ wrong here; this is the handler that makes the REPL survive it."
     (check (search "ordinary" reported) :other-errors-still-reported)))
 
 
+;;; ------------------------------------------------------------------ workers
+
+(defun test-close-input-is-refcounted ()
+  "The mirror of CLOSE-OUTPUT.  Several workers share one input channel, so the
+first to finish must not raise SIGPIPE on the others."
+  (let ((ch (make-channel :capacity 4)))
+    (setf (channel-consumers ch) 3)
+    (close-input ch)
+    (check (null (plumb::channel-consumer-closed ch)) :one-of-three-does-not-close)
+    (close-input ch)
+    (check (null (plumb::channel-consumer-closed ch)) :two-of-three-does-not-close)
+    (close-input ch)
+    (check (plumb::channel-consumer-closed ch) :the-last-one-closes))
+  ;; ABORT-INPUT is CANCEL's tool and ignores the count entirely.
+  (let ((ch (make-channel :capacity 4)))
+    (setf (channel-consumers ch) 8)
+    (send ch :a)
+    (abort-input ch)
+    (check (plumb::channel-consumer-closed ch) :abort-ignores-the-refcount)
+    (check (null (channel-last ch)) :abort-drops-the-buffer)))
+
+(defun test-run-sets-refcounts-from-thread-counts ()
+  "Both counts are thread counts, not stage counts.  Getting either wrong is a
+hang or an EOF delivered while somebody is still writing."
+  (with-timeout (15 :refcounts)
+    ;; An INFINITE source and an undrained sink, so every channel fills and no
+    ;; stage ever exits: the counts stay where RUN put them.  Against a finite
+    ;; pipeline this test races its own teardown, since closing is what
+    ;; decrements them.
+    (let* ((sink (make-channel :capacity 4))
+           (pipe (run (list (counter)
+                            (xform #'identity :workers 4)
+                            (where #'evenp :workers 2))
+                      :sink sink)))
+      (unwind-protect
+           (let ((first (first (pipeline-channels pipe)))
+                 (second (second (pipeline-channels pipe))))
+             (check (= 1 (channel-producers first)) :one-producer-for-a-plain-source)
+             (check (= 4 (channel-consumers first)) :four-consumers-downstream)
+             (check (= 4 (channel-producers second)) :four-producers-upstream)
+             (check (= 2 (channel-consumers second)) :two-consumers-downstream)
+             (check (= 2 (channel-producers sink)) :sink-counts-the-last-stage)
+             ;; :ERR is shared by every thread, not every stage: 1 + 4 + 2.
+             (check (= 7 (channel-producers (plumb::pipeline-err pipe)))
+                    :err-counts-threads))
+        (cancel pipe)))))
+
+(defun test-workers-process-every-object-exactly-once ()
+  "RECV under the channel mutex is the whole work distributor.  What it has to
+guarantee is that N workers between them see each object once -- no duplicate,
+no drop -- however the OS happens to schedule them."
+  (with-timeout (20 :workers-distribute)
+    (let ((result (collect-pipeline (list (counter :limit 200)
+                                          (xform #'1+ :workers 8)))))
+      (check (= 200 (length result)) :nothing-lost-or-duplicated)
+      (check (equal (loop for i from 1 to 200 collect i) (sort result #'<))
+             :same-multiset-out))))
+
+(defun test-workers-do-not-preserve-order ()
+  "Stated as a test because it is a promise, not an accident: output is in
+completion order.  Sorting is how you get order back."
+  (with-timeout (20 :workers-unordered)
+    ;; One worker must still be exactly ordered -- the default cannot change.
+    (check (equal '(0 1 2 3 4) (collect-pipeline (list (counter :limit 5)
+                                                       (xform #'identity))))
+           :one-worker-is-ordered)))
+
+(defun test-take-after-a-parallel-stage-tears-everything-down ()
+  "The SIGPIPE path with N consumers in the middle.  TAKE closes its input; each
+of the four workers must see CHANNEL-CLOSED on its next SEND, unwind, and
+between them close the source's channel -- or the infinite COUNTER runs forever
+and this test hangs rather than fails."
+  (with-timeout (15 :take-through-workers)
+    (let ((result (collect-pipeline (list (counter)
+                                          (xform #'identity :workers 4)
+                                          (take 5)))))
+      (check (= 5 (length result)) :take-still-stops-an-infinite-source))))
+
+(defun test-one-worker-failing-leaves-the-others-running ()
+  "A worker that dies takes its own thread down, not the stage.  With an
+unrefcounted CLOSE-INPUT it took the upstream with it and the surviving workers
+starved -- which is the bug the refcount exists to prevent."
+  (with-timeout (20 :one-worker-fails)
+    (let ((result (collect-pipeline
+                   (list (counter :limit 100)
+                         (xform (lambda (n)
+                                  ;; Exactly one worker dies, on one object.
+                                  (when (= n 0) (error "worker down"))
+                                  n)
+                                :workers 4)))))
+      ;; 99 of the 100 survive: only the object that signalled is lost, along
+      ;; with the one worker that was carrying it.
+      (check (= 99 (length result)) :the-other-workers-finished-the-job)
+      (check (not (member 0 result)) :the-failing-object-did-not-come-through))))
+
+(defun test-cancel-stops-a-parallel-pipeline ()
+  "CANCEL uses ABORT-INPUT, because against eight workers a refcount decrement
+retires one of them and leaves seven reading."
+  (with-timeout (15 :cancel-parallel)
+    (let* ((sink (make-channel :capacity 4))
+           (pipe (run (list (counter) (xform #'identity :workers 4)) :sink sink)))
+      (sleep 0.2)
+      (cancel pipe)
+      (check (every (lambda (th) (not (sb-thread:thread-alive-p th)))
+                    (pipeline-threads pipe))
+             :every-worker-stopped))))
+
+(defun test-workers-need-the-parallel-declaration ()
+  "Opt-in, because the unsafe cases fail silently.  TAKE mutates the
+constructor's own parameter; there is no :WORKERS key for it to accept."
+  (check (stage-parallel (xform #'identity)) :xform-is-parallel)
+  (check (stage-parallel (where #'evenp)) :where-is-parallel)
+  (check (not (stage-parallel (take 5))) :take-is-not-parallel)
+  (check (not (stage-parallel (sort-by #'identity))) :a-barrier-is-not-parallel)
+  (check (= 1 (stage-workers (xform #'identity))) :one-worker-by-default)
+  (check (= 4 (stage-workers (xform #'identity :workers 4))) :workers-is-recorded)
+  ;; A stage that has not declared it does not grow the key.
+  (check (nth-value 1 (ignore-errors (take 5 :workers 4))) :take-rejects-workers)
+  ;; And the count has to be a real thread count.
+  (check (typep (nth-value 1 (ignore-errors (xform #'identity :workers 0))) 'type-error)
+         :zero-workers-is-a-type-error))
+
+(defun test-watch-is-unaffected-by-workers ()
+  "The claim that WATCH needed no change: a parallel stage still has ONE output
+channel, so the counters mean what they meant."
+  (with-timeout (20 :watch-with-workers)
+    (let* ((sink (make-channel :capacity 8))
+           (pipe (run (list (counter :limit 50) (xform #'identity :workers 4))
+                      :sink sink))
+           (seen 0))
+      (loop (multiple-value-bind (x ok) (recv sink)
+              (declare (ignore x))
+              (unless ok (return))
+              (incf seen)))
+      (join pipe)
+      (check (= 50 seen) :all-fifty-arrived)
+      (check (= 50 (channel-passed sink)) :passed-still-counts-every-object))))
+
+
 ;;; --------------------------------------------------------------------- help
 
 (defun stage-named (name) (gethash name plumb::*stages*))
@@ -1489,6 +1628,15 @@ wrong here; this is the handler that makes the REPL survive it."
                   test-watch-stage-is-a-tap
                   test-watch-reads-as-a-reserved-word
                   test-interrupt-abandons-the-pipeline-not-the-session
+                  test-close-input-is-refcounted
+                  test-run-sets-refcounts-from-thread-counts
+                  test-workers-process-every-object-exactly-once
+                  test-workers-do-not-preserve-order
+                  test-take-after-a-parallel-stage-tears-everything-down
+                  test-one-worker-failing-leaves-the-others-running
+                  test-cancel-stops-a-parallel-pipeline
+                  test-workers-need-the-parallel-declaration
+                  test-watch-is-unaffected-by-workers
                   test-help-registry
                   test-help-listing
                   test-help-detail

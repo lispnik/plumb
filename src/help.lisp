@@ -202,6 +202,15 @@ built-in, and answering it would make the listing and the detail disagree."
     (format stream "~%  consumes ~a~%  produces ~a~%  ports    ~{~a~^ ~}~%"
             (render-type (si-consumes info)) (render-type (si-produces info))
             (mapcar #'down1 (si-ports info)))
+    ;; Neither of these can be read off the type signature, which is exactly
+    ;; why EXPLAIN draws them too.
+    (when (si-barrier info)
+      (format stream "  ~a~%"
+              (paint "barrier  emits nothing until its input ends" :yellow)))
+    (when (si-parallel info)
+      (format stream "  ~a~%"
+              (paint "parallel :workers n runs n threads; output in completion order"
+                     :yellow)))
     (let ((doc (si-documentation info)))
       (if doc
           (format stream "~%~{  ~a~%~}" (split-lines doc))
