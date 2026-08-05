@@ -186,6 +186,127 @@ leaves it plain and the assertions can look for bare text."
 
 (defun names (paths) (mapcar #'file-namestring paths))
 
+(defun try-glob (pattern name) (and (glob-match pattern name) t))
+
+(defun test-glob-posix-classes ()
+  "POSIX bracket expressions: character classes, collating symbols and
+equivalence classes.  The last two degenerate to the literal character, there
+being no collating locale here."
+  (check (try-glob "a[[:digit:]].txt" "a1.txt") :digit-class)
+  (check (not (try-glob "a[[:digit:]].txt" "ab.txt")) :digit-class-excludes)
+  (check (try-glob "a[[:alpha:]].txt" "ab.txt") :alpha-class)
+  (check (try-glob "[[:upper:]]*" "Abc") :upper-class)
+  (check (not (try-glob "[[:upper:]]*" "abc")) :upper-class-excludes)
+  (check (try-glob "[![:digit:]]*" "abc") :negated-class)
+  (check (not (try-glob "[![:digit:]]*" "1bc")) :negated-class-excludes)
+  (check (try-glob "[[:xdigit:]]*" "fed") :xdigit-class)
+  (check (try-glob "[[:space:]]" " ") :space-class)
+  (check (try-glob "[[:punct:]]" "!") :punct-class)
+  (check (try-glob "[[.a.]]bc" "abc") :collating-symbol)
+  (check (try-glob "[[=a=]]bc" "abc") :equivalence-class)
+  ;; An unknown class is its characters, and an unterminated [ is literal.
+  (check (try-glob "[abc" "[abc") :unterminated-set-is-literal))
+
+(defun test-glob-alternation-and-extglob ()
+  "zsh (a|b) and bash's extglob operators."
+  (check (try-glob "(a|b).txt" "a.txt") :alternation)
+  (check (not (try-glob "(a|b).txt" "c.txt")) :alternation-excludes)
+  (check (try-glob "@(foo|bar).c" "bar.c") :extglob-at)
+  (check (try-glob "?(a)b" "b") :extglob-question-zero)
+  (check (try-glob "?(a)b" "ab") :extglob-question-one)
+  (check (not (try-glob "?(a)b" "aab")) :extglob-question-not-two)
+  (check (try-glob "*(ab)c" "c") :extglob-star-zero)
+  (check (try-glob "*(ab)c" "ababc") :extglob-star-many)
+  (check (not (try-glob "+(ab)c" "c")) :extglob-plus-needs-one)
+  (check (try-glob "+(ab)c" "abc") :extglob-plus-one)
+  (check (try-glob "!(a).txt" "b.txt") :extglob-not)
+  (check (not (try-glob "!(a).txt" "a.txt")) :extglob-not-excludes))
+
+(defun test-glob-zsh-operators ()
+  "^p, p1~p2, closure and numeric ranges -- checked against zsh -o extendedglob
+while they were written."
+  (check (try-glob "^*.lisp" "a.txt") :caret-negation)
+  (check (not (try-glob "^*.lisp" "a.lisp")) :caret-negation-excludes)
+  (check (try-glob "*.txt~a*" "b.txt") :exclusion)
+  (check (not (try-glob "*.txt~a*" "abc.txt")) :exclusion-excludes)
+  (check (try-glob "ab#c" "ac") :closure-zero)
+  (check (try-glob "ab#c" "abbbc") :closure-many)
+  (check (not (try-glob "ab##c" "ac")) :one-or-more-needs-one)
+  (check (try-glob "ab##c" "abc") :one-or-more)
+  (check (try-glob "<1-9>.txt" "5.txt") :numeric-range)
+  (check (not (try-glob "<1-9>.txt" "50.txt")) :numeric-range-excludes)
+  (check (try-glob "<10-20>" "15") :numeric-range-multidigit)
+  (check (try-glob "<->" "12345") :numeric-range-open)
+  (check (try-glob "(#i)ABC" "abc") :case-insensitive-flag)
+  (check (not (try-glob "ABC" "abc")) :case-sensitive-by-default)
+  ;; The options bash spells nocaseglob and dotglob.
+  (check (let ((*glob-ignore-case* t)) (try-glob "ABC" "abc")) :ignore-case-option)
+  (check (let ((*glob-match-dotfiles* t)) (try-glob "*" ".hidden")) :dotglob-option))
+
+(defun test-brace-expansion ()
+  "Not glob: a separate pass, checked against bash while it was written."
+  (check (equal '("a" "b") (expand-braces "{a,b}")) :comma-list)
+  (check (equal '("a1" "a2" "b1" "b2") (expand-braces "{a,b}{1,2}")) :adjacent-groups)
+  (check (equal '("1" "2" "3") (expand-braces "{1..3}")) :numeric-range)
+  (check (equal '("a" "b" "c") (expand-braces "{a..c}")) :character-range)
+  (check (equal '("1" "3" "5") (expand-braces "{1..5..2}")) :stepped-range)
+  (check (equal '("5" "4" "3") (expand-braces "{5..3}")) :descending-range)
+  (check (equal '("abf" "acdf" "acef") (expand-braces "a{b,c{d,e}}f")) :nested)
+  ;; A group with no comma and no .. is a literal, and must not spin.
+  (check (equal '("{x}") (expand-braces "{x}")) :not-a-group)
+  (check (equal '("plain") (expand-braces "plain")) :no-braces))
+
+(defun test-glob-qualifiers ()
+  "The qualifier senses, which are the easy ones to get backwards.  Every case
+here was compared against zsh on the same directory."
+  (with-timeout (25 :qualifiers)
+    (let ((dir "/tmp/plumb-qual-test/"))
+      (unwind-protect
+           (flet ((sh (c) (sb-ext:run-program "/bin/sh" (list "-c" c) :search nil :wait t))
+                  (names (pattern)
+                    (sort (mapcar (lambda (p) (basename (sb-ext:native-namestring p)))
+                                  (glob pattern))
+                          #'string<))
+                  (ordered (pattern)
+                    ;; Unsorted: an ordering qualifier is exactly what must not
+                    ;; be re-sorted before it is checked.
+                    (mapcar (lambda (p) (basename (sb-ext:native-namestring p)))
+                            (glob pattern))))
+             (sh (format nil "rm -rf ~a; mkdir -p ~aadir" dir dir))
+             (sh (format nil "cd ~a && ln -s adir alink && : > small.txt && ~
+head -c 3000 /dev/zero > big.txt && : > exe.sh && chmod +x exe.sh && ~
+touch -t 202001010000 old.txt" dir))
+             (flet ((q (suffix) (names (concatenate 'string dir "*" suffix))))
+               ;; types
+               (check (equal '("big.txt" "exe.sh" "old.txt" "small.txt") (q "(.)")) :plain-files)
+               (check (equal '("adir") (q "(/)")) :directories)
+               (check (equal '("alink") (q "(@)")) :symlinks)
+               (check (equal '("exe.sh") (q "(*)")) :executables)
+               (check (equal '("adir" "alink") (q "(^.)")) :negated-qualifier)
+               ;; size: + is larger, - is smaller
+               (check (equal '("big.txt") (q "(L+1000)")) :larger-than)
+               (check (equal '("big.txt") (q "(Lk+2)")) :size-units)
+               (check (not (member "big.txt" (q "(L-1000)") :test #'string=)) :smaller-than)
+               ;; time: - is newer, + is older
+               (check (equal '("old.txt") (q "(m+30)")) :older-than)
+               (check (not (member "old.txt" (q "(mh-1)") :test #'string=)) :newer-than)
+               ;; ordering and subscripting, which run after filtering
+               (check (equal 1 (length (q "(om[1])"))) :subscript-one)
+               (check (equal 2 (length (q "(om[1,2])"))) :subscript-range)
+               (check (equal (reverse (ordered (concatenate 'string dir "*(oL)")))
+                             (ordered (concatenate 'string dir "*(OL)")))
+                      :reverse-order-is-the-reverse)
+               ;; oL really is ascending by size, biggest last.
+               (check (string= "big.txt" (car (last (ordered (concatenate 'string dir "*(oL)")))))
+                      :ascending-by-size)
+               ;; om really is newest first, and old.txt is from 2020.
+               (check (string= "old.txt" (car (last (ordered (concatenate 'string dir "*(om)")))))
+                      :newest-first)
+               ;; combined, which is the point of them
+               (check (equal '("big.txt") (q "(.L+1000)")) :type-and-size)))
+        (sb-ext:run-program "/bin/sh" (list "-c" (format nil "rm -rf ~a" dir))
+                            :search nil :wait t)))))
+
 (defun test-glob-matching ()
   "The matcher itself.  CL pathname patterns got three of these silently
 wrong, which is why globbing no longer goes through them."
@@ -1198,6 +1319,11 @@ return the resulting text and point."
                   test-completion
                   test-glob
                   test-glob-matching
+                  test-glob-posix-classes
+                  test-glob-alternation-and-extglob
+                  test-glob-zsh-operators
+                  test-brace-expansion
+                  test-glob-qualifiers
                   test-glob-finds-awkward-names
                   test-glob-and-symlinks
                   test-ls-stats-rather-than-opens

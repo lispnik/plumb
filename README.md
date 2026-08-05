@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 316 assertions
+(asdf:test-system "plumb")     ; 382 assertions
 ```
 
 ```
@@ -130,11 +130,47 @@ $ plumb 'ls src/[cf]*.lisp'             # character classes
 $ plumb 'ls src/?ield.lisp'             # ? is one character
 ```
 
-Ranges (`[a-z]`), negation (`[!a]` or `[^a]`), and backslash escapes all work,
-and `*` skips dotfiles as a shell's does — write `.*` for those. A directory
-lists its members with or without the trailing slash, a plain file names
-itself, and a pattern matching nothing yields nothing rather than an error.
-Results are **sorted**, so pipelines built on `ls` are reproducible.
+The syntax is POSIX fnmatch, bash's extensions and zsh's, together:
+
+| | |
+|---|---|
+| POSIX | `*` `?` `[a-z]` `[!a]`, classes `[[:digit:]]`, `[[.a.]]` `[[=a=]]`, `\` escapes |
+| bash | `**`, extglob `?(p)` `*(p)` `+(p)` `@(p)` `!(p)`, braces `{a,b}` `{1..9..2}` |
+| zsh | `(a|b)`, `^p`, `p1~p2`, `x#` `x##`, `<1-9>`, `(#i)`, `***`, and qualifiers |
+
+`*` skips dotfiles as a shell's does — write `.*`, or bind
+`*glob-match-dotfiles*` (bash's `dotglob`). `*glob-ignore-case*` is
+`nocaseglob`. A directory lists its members with or without the trailing
+slash, a plain file names itself, and a pattern matching nothing yields nothing
+rather than an error. Results are **sorted**, unless a qualifier ordered them.
+
+### Qualifiers
+
+zsh's trailing `(...)` filters, orders and subscripts the matches — in that
+order, since `[1,3]` means the first three *of the sorted result*:
+
+```
+plumb 'ls "*(.)"'            plain files          . / @ = p %b %c
+plumb 'ls "*(.Lm+1)"'        over a megabyte      L[kmgp][+-]n
+plumb 'ls "*(mh-1)"'         touched this hour    m|a|c [Mwhms][+-]n
+plumb 'ls "*(om[1,3])"'      three most recent    o|O [nLlamcN], [n] [n,m]
+plumb 'ls "*(^.)"'           everything but files ^ negates the next
+plumb 'ls "*(u:root:)"'      owned by root        U G u:name: g:name: l d
+```
+
+Two senses are worth stating because they are easy to invert, and both were
+taken from zsh rather than from memory: **`L+n` is larger** than n and `L-n`
+smaller; **`m-n` is newer** than n units ago and `m+n` older — the sign reads
+as a comparison against the file's *age*. `oL` sorts ascending by size, but
+`om` sorts **newest first**, which is consistent only if `o` is read as
+ascending order of age.
+
+Ordering uses **nanosecond** timestamps, so a directory built inside one second
+still orders correctly — with whole seconds every file ties and `om[1,3]`
+silently returns the wrong three.
+
+Quote any pattern using `{}`, `()` or `<>`: unquoted, word mode reads those as
+a block, a Lisp form, and redirection. Everything else works bare.
 
 Globbing does **not** go through CL's `directory` and pathname patterns, which
 got five things wrong — three of them silently. `[a-c]` was the literal set
@@ -645,7 +681,8 @@ block macro a `{...}` reader would expand to:
 |---|---|
 | `src/ansi.lisp` | terminal colour, shared by the prompt and `help` |
 | `src/stat.lisp` | one `lstat` through `sb-alien`: nanoseconds, blocks, birthtime |
-| `src/glob.lisp` | shell globbing over `readdir`, not CL pathname patterns |
+| `src/glob.lisp` | globbing: braces, the pattern parser, the matcher |
+| `src/glob-qualifiers.lisp` | zsh `(...)` qualifiers: filter, order, subscript |
 | `src/channel.lisp` | bounded FIFO, backpressure, two-sided close |
 | `src/field.lisp` | uniform field access, `$` block macro |
 | `src/reader.lisp` | word mode: `\|`, `{...}`, `.field`, earmuffs |

@@ -14,6 +14,7 @@
                (:file "ansi")
                (:file "stat")
                (:file "glob")
+               (:file "glob-qualifiers")
                (:file "channel")
                (:file "field")
                (:file "present")
