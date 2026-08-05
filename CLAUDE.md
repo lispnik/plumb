@@ -8,7 +8,7 @@ carrying Lisp objects, instead of processes and byte streams. SBCL only
 except in `plumb/crypto`, which is optional and separate for that reason.
 
 ```
-sbcl --eval '(asdf:test-system "plumb")'   ; 407 assertions, all passing
+sbcl --eval '(asdf:test-system "plumb")'   ; 421 assertions, all passing
 make                                       ; dump bin/plumb
 sbcl --script demo.lisp
 make crypto && make test-crypto            ; the optional Ironclad system
@@ -66,6 +66,23 @@ make crypto && make test-crypto            ; the optional Ironclad system
   and fan-out lets several stages print at once; without it two branches
   duplicate and drop each other's lines, differently on every run. Per line for
   `print-items`/`peek`, around the whole render for `table`.
+- **sysfs `size` is in 512-byte sectors, always.** Not in
+  `queue/logical_block_size`. Multiplying by the logical block size is the
+  classic wrong answer and is *correct on any 512-byte device*, so it survives
+  casual testing -- the Pi would not have caught it. macOS sizes come from the
+  exact parenthetical in `diskutil info` (`(500277792768 Bytes)`) and never from
+  `diskutil list`, whose figures are rounded to one decimal.
+- **`disks` reads a kernel interface on Linux and a *tool* on macOS.** That
+  asymmetry is the feature's main risk and should not be papered over:
+  `/sys/block` is stable ABI, `diskutil` is a user command whose output has
+  changed across releases. Both are cross-checked in the suite against `lsblk -b`
+  and `diskutil info`, because a parser of human-facing output fails by
+  producing plausible numbers rather than by erroring.
+- **`with-command` returns `finish-command`'s value, not the body's.** Reading
+  its result gives the exit status. `sh` and `ps` never noticed because they use
+  it purely for effect; `linux-usage-table` did, and the symptom was `disks`
+  emitting nothing at all on Linux while working fine on macOS. Bind what you
+  need inside the body.
 - **Metadata comes from one `lstat`, never from opening the file.** `open` needs
   read permission and blocks forever on a FIFO; `ls` used to hang on a
   directory containing one. `lstat` also describes a symlink rather than
@@ -260,6 +277,9 @@ make crypto && make test-crypto            ; the optional Ironclad system
 - New stages go in `src/stages.lisp`, new exports in `src/package.lisp`.
   `src/crypto.lisp` is the exception on both counts: it exports at load time,
   since its symbols name nothing on a build without Ironclad.
+- Don't assert the ambient environment in a test either. The `ls` fixture used
+  `chmod +x` and asserted `-rwxr-xr-x`, which is true under umask 022 and false
+  under Debian's 002; `chmod 755` states what it means.
 - Don't assert a census of the repository in a test. `(= 3 (length (glob
   "src/[cf]*.lisp")))` failed the day a source file was added; assert the
   property instead.

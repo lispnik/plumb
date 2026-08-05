@@ -493,7 +493,7 @@ on, a file it could not open, a symlink, and an executable."
       (unwind-protect
            (progn
              (sh (format nil "rm -rf ~a; mkdir -p ~a" dir dir))
-             (sh (format nil "cd ~a && echo hello > reg && chmod +x reg && ~
+             (sh (format nil "cd ~a && echo hello > reg && chmod 755 reg && ~
 ln -s reg link && mkfifo pipe && echo x > noread && chmod 000 noread" dir))
              (funcall function dir))
         (sh (format nil "chmod 644 ~anoread 2>/dev/null; rm -rf ~a" dir dir))))))
@@ -1222,6 +1222,7 @@ return the resulting text and point."
                     (join (run (list (from-list rows) (print-items :stream s))))))))
       (check (= 2 (count #\Newline out)) :one-line-per-object))))
 
+
 ;;; -------------------------------------------------------------------- watch
 
 (defun test-channel-counters ()
@@ -1477,6 +1478,118 @@ channel, so the counters mean what they meant."
       (check (= 50 (channel-passed sink)) :passed-still-counts-every-object))))
 
 
+;;; ------------------------------------------------------------- block devices
+
+(defun shell-lines (command)
+  "Output of COMMAND as a list of lines.  For cross-checking DISKS against the
+tools that already know the answer."
+  (let ((text (with-output-to-string (out)
+                (sb-ext:run-program "/bin/sh" (list "-c" command)
+                                    :search nil :wait t :output out))))
+    (split-lines text)))
+
+(defun test-disks-emits-something ()
+  "The failure mode to guard first: a parser that silently yields nothing makes
+every other assertion in this section pass vacuously."
+  (with-timeout (60 :disks-nonempty)
+    (let ((devices (collect-pipeline (list (disks)))))
+      (check (plusp (length devices)) :some-devices-found)
+      (check (every #'block-device-p devices) :all-are-block-devices)
+      (check (every #'block-device-name devices) :every-device-is-named)
+      ;; Bytes, like LS's .size -- not sectors and not a rounded human figure.
+      ;; A size in sectors would be ~512x too small and still look plausible.
+      (check (some (lambda (d) (and (block-device-size d)
+                                    (> (block-device-size d) 1000000000)))
+                   devices)
+             :sizes-are-in-bytes)
+      (check (every (lambda (d) (member (block-device-type d)
+                                        '(:disk :partition :volume :loop :ram)))
+                    devices)
+             :types-are-from-the-coarse-set))))
+
+(defun test-disks-agrees-with-the-system-tool ()
+  "Cross-checked against the tool that already knows, the way src/stat.lisp
+asserts its hand-written struct against sb-posix -- and for the same reason: a
+parser of human-facing output fails by producing *plausible* numbers, which no
+self-consistent test would catch."
+  (with-timeout (90 :disks-cross-check)
+    (let ((devices (collect-pipeline (list (disks)))))
+      #+darwin
+      (let ((listed (remove-if-not
+                     (lambda (l) (plusp (length l)))
+                     (mapcar (lambda (l) (string-trim " " l))
+                             (shell-lines "diskutil list | awk '/^\\/dev\\// {print $1}'")))))
+        ;; Every whole disk diskutil lists must appear, by node.
+        (check (every (lambda (node)
+                        (find node devices :key #'block-device-node :test #'equal))
+                      listed)
+               :every-whole-disk-appears)
+        ;; And a size we did not compute ourselves.
+        (let ((root (find "/" devices :key #'block-device-mount-point :test #'equal)))
+          (check root :the-root-volume-is-present)
+          (when root
+            (let* ((line (first (shell-lines
+                                 (format nil "diskutil info ~a | grep -E '(Disk|Volume Total) Size|Container Total'"
+                                         (block-device-name root)))))
+                   (open (and line (position #\( line)))
+                   (bytes (and open (parse-integer line :start (1+ open) :junk-allowed t))))
+              (check (and bytes (= bytes (block-device-size root)))
+                     :root-size-matches-diskutil)))))
+      #+linux
+      (progn
+        ;; lsblk -b prints bytes, which is what .size is.
+        (dolist (line (rest (shell-lines "lsblk -bnro NAME,SIZE")))
+          (let* ((f (plumb::split-on-spaces line))
+                 (name (first f))
+                 (bytes (and (second f) (parse-integer (second f) :junk-allowed t)))
+                 (ours (find name devices :key #'block-device-name :test #'equal)))
+            (when (and ours bytes)
+              (check (eql bytes (block-device-size ours)) :size-matches-lsblk))))
+        ;; Partitions know their parent, and mount points come from /proc/mounts.
+        (let ((parts (remove :partition devices :key #'block-device-type :test-not #'eq)))
+          (check (every #'block-device-parent parts) :every-partition-has-a-parent))
+        (dolist (line (shell-lines "grep '^/dev/' /proc/mounts"))
+          (let* ((f (plumb::split-on-spaces line))
+                 (ours (find (first f) devices :key #'block-device-node :test #'equal)))
+            (when ours
+              (check (equal (plumb::unescape-mount-field (second f))
+                            (block-device-mount-point ours))
+                     :mount-point-matches-proc-mounts)
+              (check (equal (third f) (block-device-fs-type ours))
+                     :fs-type-matches-proc-mounts))))
+        ;; major:minor straight out of sysfs.
+        (let ((root (find "/" devices :key #'block-device-mount-point :test #'equal)))
+          (when root
+            (check (block-device-major root) :major-is-populated-on-linux)
+            (check (block-device-minor root) :minor-is-populated-on-linux)))))))
+
+(defun test-disks-usage-only-where-mounted ()
+  "USED and AVAILABLE are filesystem facts, so an unmounted device must not
+carry them -- a leftover from the previous row is exactly the kind of wrong
+answer that reads fine."
+  (with-timeout (60 :disks-usage)
+    (let ((devices (collect-pipeline (list (disks)))))
+      (check (every (lambda (d)
+                      (or (block-device-mount-point d)
+                          (and (null (block-device-used d))
+                               (null (block-device-available d)))))
+                    devices)
+             :usage-only-on-mounted-devices)
+      (let ((mounted (remove nil devices :key #'block-device-mount-point)))
+        (check (plusp (length mounted)) :something-is-mounted)
+        (check (every (lambda (d) (and (block-device-used d)
+                                       (block-device-available d)))
+                      mounted)
+               :mounted-devices-report-usage)))))
+
+(defun test-disks-has-no-selection-options ()
+  "Same argument PS makes: narrowing is WHERE.  If DISKS grew a filter it would
+be the start of re-implementing lsblk's option set."
+  (check (null (plumb::si-lambda-list (gethash 'disks plumb::*stages*)))
+         :disks-takes-no-arguments)
+  (check (eq :source (plumb::stage-kind (gethash 'disks plumb::*stages*)))
+         :disks-is-a-source))
+
 ;;; --------------------------------------------------------------------- help
 
 (defun stage-named (name) (gethash name plumb::*stages*))
@@ -1637,6 +1750,10 @@ channel, so the counters mean what they meant."
                   test-cancel-stops-a-parallel-pipeline
                   test-workers-need-the-parallel-declaration
                   test-watch-is-unaffected-by-workers
+                  test-disks-emits-something
+                  test-disks-agrees-with-the-system-tool
+                  test-disks-usage-only-where-mounted
+                  test-disks-has-no-selection-options
                   test-help-registry
                   test-help-listing
                   test-help-detail

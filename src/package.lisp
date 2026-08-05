@@ -26,7 +26,7 @@
    #:check-pipeline #:pipeline-type-error #:pipeline-type-error-port
    #:pipeline-type-error-upstream #:pipeline-type-error-downstream
    ;; built-in stages
-   #:from-list #:counter #:ls #:lines #:sh #:to-sh #:glob #:ps
+   #:from-list #:counter #:ls #:lines #:sh #:to-sh #:glob #:ps #:disks
    #:glob-match #:glob-pattern-p #:read-directory-names #:basename #:map-glob
    #:where #:xform #:take #:drop #:uniq #:sort-by #:tally #:accumulate
    #:peek #:to-text #:print-items #:table #:to-file #:from-file #:tee #:route
@@ -60,6 +60,16 @@
    #:fs-atime #:fs-atime-nsec #:fs-mtime #:fs-mtime-nsec #:fs-ctime #:fs-ctime-nsec
    #:fs-birthtime #:fs-blocks #:fs-blksize
    #:line #:make-line #:copy-line #:line-text #:line-number #:line-source
+   #:block-device #:make-block-device #:copy-block-device #:block-device-p
+   #:block-device-name #:block-device-node #:block-device-type
+   #:block-device-parent #:block-device-size #:block-device-block-size
+   #:block-device-read-only #:block-device-removable #:block-device-model
+   #:block-device-mount-point #:block-device-fs-type
+   #:block-device-used #:block-device-available
+   #:block-device-major #:block-device-minor #:block-device-rotational
+   #:block-device-start #:block-device-content #:block-device-protocol
+   #:block-device-internal #:block-device-virtual
+   #:map-block-devices
    #:process #:make-process #:copy-process #:process-pid #:process-ppid
    #:process-user #:process-state #:process-pcpu #:process-pmem
    #:process-rss #:process-vsz #:process-etime #:process-tty

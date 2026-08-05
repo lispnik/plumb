@@ -25,6 +25,7 @@
                (:file "pipeline")
                (:file "stages")
                (:file "process")
+               (:file "blockdev")
                (:file "explain")
                (:file "watch")
                (:file "help"))
@@ -47,6 +48,15 @@
   :build-operation "program-op"
   :build-pathname "bin/plumb"
   :entry-point "plumb.cli:main")
+
+;;; Digests, via Ironclad.  Deliberately a separate system: "plumb" and
+;;; "plumb/cli" have no external dependencies and `make` must keep working on a
+;;; machine with no Quicklisp and no ocicl.  Loading this one adds DIGEST and
+;;; DIGESTS to the PLUMB package, so they behave as built-ins -- `help digest`
+;;; and TAB completion pick them up with no further wiring.
+;;;
+;;;   (asdf:load-system "plumb/crypto")   ; with Ironclad on the search path
+;;;   make crypto                         ; bin/plumb with digests baked in
 
 (defsystem "plumb/crypto"
   :description "Digest stages for plumb, on top of Ironclad."

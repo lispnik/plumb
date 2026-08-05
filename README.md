@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 407 assertions
+(asdf:test-system "plumb")     ; 420 assertions on macOS, 421 on Linux
 ```
 
 ```
@@ -507,6 +507,62 @@ The data comes from `ps(1)`; what plumb adds is that it arrives as objects. A
 native implementation would mean `/proc` on Linux and `sysctl` plus `libproc`
 on macOS — two lots of platform FFI to obtain what `ps` already prints.
 
+## disks
+
+Block devices as objects — every disk, partition and volume, mounted or not:
+
+```
+$ plumb 'disks | where {(eq .type :disk)} | table :columns (list :name :size :model)'
+name     size          model
+disk0    500277792768  APPLE SSD AP0512Z
+
+$ plumb 'disks | where {.mount-point} | table :columns (list :name :size :used :fs-type :mount-point)'
+name               size          used  fs-type  mount-point
+disk3s1s1  494384795648   12644925440  APFS     /
+disk3s5    494384795648  438488342528  APFS     /System/Volumes/Data
+```
+
+Sizes are in **bytes**, like `ls`'s `.size` and `ps`'s `.rss`, so one `100gb`
+literal means the same thing against any of them. No selection options, for the
+reason `ps` gives: narrowing is `where`, ordering is `sort-by`.
+
+**The two platforms are read very differently, and are not equally
+trustworthy** — worth knowing before relying on it:
+
+| | Linux | macOS |
+|---|---|---|
+| source | `/sys/block` | `diskutil info -all` |
+| kind | kernel-stable interface | a user-facing *tool* |
+| cost | plain file reads, no subprocess | one subprocess |
+| root | not needed | not needed |
+
+The macOS half is the fragile one: there is no sysfs, `/dev/disk*` is
+`root:operator` so the ioctl route needs privileges, and IOKit would mean a
+large alien surface over CoreFoundation. Parsing `diskutil` is the best
+unprivileged source there, and it is the part most likely to rot — its output
+has changed across releases. Both halves are cross-checked in the suite against
+`lsblk -b` and `diskutil info` respectively, because a parser of human-facing
+output fails by producing *plausible* numbers.
+
+**Every field name is the same on both platforms** — it is one struct, so
+`fields` returns an identical 21-key list either way. What differs is which are
+populated: `.major` `.minor` `.rotational` `.start` are Linux-only, `.content`
+`.protocol` `.internal` are macOS-only, and `.used`/`.available` are set only
+where the device is mounted. `.virtual` has a real source on both — a disk
+image on macOS, an attached loop device on Linux.
+
+One caveat on the booleans. `.read-only`, `.removable`, `.rotational`,
+`.internal` and `.virtual` are `nil` both for *false* and for *this platform
+cannot say*, and nothing distinguishes the two. `where {(not .rotational)}`
+therefore also matches devices whose rotational state is unknown.
+
+What is deliberately **not** unified: macOS synthesised APFS containers and
+`Physical Store` have no Linux analogue, and Linux device-mapper, LVM, `md` and
+`loop` have none on macOS. `.parent` expresses both and `.type` is coarse
+(`:disk` `:partition` `:volume` `:loop` `:ram`) rather than a union of two
+platform vocabularies. On an APFS volume `.size` is the whole container,
+because that is what an APFS volume actually has — no fixed extent of its own.
+
 ## Fan-out
 
 `tee` sends every object down each of its branches as well as onward, so one
@@ -842,6 +898,7 @@ completion all read that one package.
 | `src/pipeline.lisp` | wiring, spawning, teardown, type checking |
 | `src/stages.lisp` | `from-list` `counter` `ls` `lines` `where` `xform` `take` `drop` `uniq` `peek` `sort-by` `tally` `accumulate` `to-text` `print-items` `table` |
 | `src/process.lisp` | `sh` / `to-sh` / `ps`: external commands and the process table |
+| `src/blockdev.lisp` | `disks`: /sys/block on Linux, `diskutil` on macOS |
 | `src/crypto.lisp` | `digest` / `digests`, on Ironclad -- the `plumb/crypto` system |
 | `src/help.lisp` | `help`: the stage registry, listing and detail rendering |
 | `src/explain.lisp` | `explain`: pipeline metadata, drawn without running |
