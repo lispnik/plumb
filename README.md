@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 266 assertions
+(asdf:test-system "plumb")     ; 288 assertions
 ```
 
 ```
@@ -70,7 +70,9 @@ sh "find . -type f" | take 5
 | `.type` | `:file` `:directory` `:symlink` `:fifo` `:socket` `:character-device` `:block-device` |
 | `.mode` `.nlink` `.uid` `.gid` `.user` `.group` `.ino` | `mode-string` renders `-rwxr-xr-x` |
 | `.target` | where a symlink points (one `readlink`, symlinks only) |
-| `.dir-p` | kept, and equivalent to `(eq .type :directory)` |
+| `.mtime-nsec` `.atime-nsec` `.ctime-nsec` | the fraction of a second, 0–999999999 |
+| `.birthtime` `.blocks` `.blksize` | creation time, 512-byte blocks allocated, block size |
+| `.dev` `.dir-p` | `.dir-p` is kept, and equals `(eq .type :directory)` |
 
 `present` says what things are, `ls -F` style — `dir/`, `link@`, `pipe|`,
 `socket=`, `executable*`.
@@ -82,6 +84,32 @@ on a FIFO** — `open` on a named pipe waits for a writer. One `lstat` cannot
 block, needs no read permission, and describes the link rather than following
 it. Listing 2962 files went from 210–320 ms to 100–140 ms, against a 80 ms
 floor for the directory scan alone.
+
+`sb-posix`'s `stat` does not surface sub-second timestamps, `st_blocks` or
+Darwin's `st_birthtime`, so `src/stat.lisp` declares the platform's
+`struct stat` and calls `lstat` through `sb-alien` — still **one syscall**, just
+one that gives up everything it has. Files written inside the same second get
+a real order:
+
+```
+$ plumb 'ls dir/ | sort-by {(precise-time (fld :mtime) (fld :mtime-nsec))} | …'
+a .443382875
+b .443475501
+c .443545418
+```
+
+`.mtime` itself stays whole-second universal time, so `decode-universal-time`
+and comparisons against `get-universal-time` keep working; the fraction sits
+beside it rather than being folded in. `precise-time` combines them into an
+exact **rational** — a double cannot hold a universal time to nanosecond
+resolution, so a float would drop the difference exactly where it matters.
+
+A hand-written struct layout is only safe if it is checked, so the test suite
+compares every field `sb-posix` also knows — size, mode, inode, uid, gid,
+nlink, dev, mtime, atime — against it. A wrong offset fails there on a value
+known independently, rather than appearing as plausible nonsense in the
+nanosecond fields nothing else can verify. Darwin/arm64 is implemented and
+tested; elsewhere it falls back to `sb-posix` with those extra fields `nil`.
 
 Owner and group names are looked up once per distinct id, in a table local to
 each `ls`, so a listing costs a handful of lookups regardless of file count.
@@ -601,6 +629,7 @@ block macro a `{...}` reader would expand to:
 | | |
 |---|---|
 | `src/ansi.lisp` | terminal colour, shared by the prompt and `help` |
+| `src/stat.lisp` | one `lstat` through `sb-alien`: nanoseconds, blocks, birthtime |
 | `src/channel.lisp` | bounded FIFO, backpressure, two-sided close |
 | `src/field.lisp` | uniform field access, `$` block macro |
 | `src/reader.lisp` | word mode: `\|`, `{...}`, `.field`, earmuffs |

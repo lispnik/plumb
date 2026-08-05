@@ -21,7 +21,12 @@ downstream TAKE really does tear the source down."
 (defstruct file-entry
   path name size mtime dir-p
   ;; Everything below comes from the same single LSTAT as SIZE and MTIME.
-  type mode nlink uid gid user group ino atime ctime target)
+  type mode nlink uid gid user group ino dev target
+  atime ctime birthtime
+  ;; Fractions of a second, 0-999999999.  NIL where the platform has no
+  ;; struct stat declared -- see src/stat.lisp.
+  mtime-nsec atime-nsec ctime-nsec
+  blocks blksize)
 
 (defmethod present ((object file-entry))
   ;; ls -F's suffixes: they cost nothing once TYPE and MODE are known, and a
@@ -92,34 +97,35 @@ itself is what is in the stream.  And LSTAT rather than opening the file: the
 old code called FILE-LENGTH on an open stream, which cost open+fstat+close per
 file, lost the size of anything unreadable, and blocked forever on a FIFO."
   (let* ((directory-p (null (pathname-name path)))
-         (stat (ignore-errors (sb-posix:lstat path))))
+         (stat (ignore-errors (file-stat path))))
     (when stat
-      (let* ((mode (sb-posix:stat-mode stat))
+      (let* ((mode (fs-mode stat))
              (type (file-type-of mode)))
         (make-file-entry
          :path path
          :name (if directory-p (car (last (pathname-directory path))) (file-namestring path))
          :dir-p (eq type :directory)
          :type type
-         :size (sb-posix:stat-size stat)
+         :size (fs-size stat)
          :mode mode
-         :nlink (sb-posix:stat-nlink stat)
-         :uid (sb-posix:stat-uid stat)
-         :gid (sb-posix:stat-gid stat)
-         :user (name-for-id (sb-posix:stat-uid stat) users
+         :nlink (fs-nlink stat)
+         :uid (fs-uid stat)
+         :gid (fs-gid stat)
+         :user (name-for-id (fs-uid stat) users
                             #'sb-posix:getpwuid #'sb-posix:passwd-name)
-         :group (name-for-id (sb-posix:stat-gid stat) groups
+         :group (name-for-id (fs-gid stat) groups
                              #'sb-posix:getgrgid #'sb-posix:group-name)
-         :ino (sb-posix:stat-ino stat)
-         ;; MTIME stays a universal time, as FILE-WRITE-DATE gave it, so
-         ;; existing pipelines comparing against GET-UNIVERSAL-TIME still work.
-         :mtime (unix-to-universal-time (sb-posix:stat-mtime stat))
-         :atime (unix-to-universal-time (sb-posix:stat-atime stat))
-         :ctime (unix-to-universal-time (sb-posix:stat-ctime stat))
+         :ino (fs-ino stat)
+         :dev (fs-dev stat)
+         ;; MTIME stays a whole-second universal time, as FILE-WRITE-DATE gave
+         ;; it, so existing pipelines comparing against GET-UNIVERSAL-TIME
+         ;; still work.  The fraction is alongside it, not folded in.
+         :mtime (fs-mtime stat) :mtime-nsec (fs-mtime-nsec stat)
+         :atime (fs-atime stat) :atime-nsec (fs-atime-nsec stat)
+         :ctime (fs-ctime stat) :ctime-nsec (fs-ctime-nsec stat)
+         :birthtime (fs-birthtime stat)
+         :blocks (fs-blocks stat) :blksize (fs-blksize stat)
          :target (when (eq type :symlink) (ignore-errors (sb-posix:readlink path))))))))
-
-(defun unix-to-universal-time (seconds)
-  (when seconds (+ seconds (encode-universal-time 0 0 0 1 1 1970 0))))
 
 (defun as-directory (pathname)
   "PATHNAME as a directory, whether or not it was written with a trailing /."

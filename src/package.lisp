@@ -44,6 +44,14 @@
    #:file-entry-mode #:file-entry-nlink #:file-entry-uid #:file-entry-gid
    #:file-entry-user #:file-entry-group #:file-entry-ino #:file-entry-atime
    #:file-entry-ctime #:file-entry-target #:mode-string #:file-type-of
+   #:file-entry-dev #:file-entry-birthtime #:file-entry-blocks #:file-entry-blksize
+   #:file-entry-mtime-nsec #:file-entry-atime-nsec #:file-entry-ctime-nsec
+   ;; one lstat, with what sb-posix does not surface (src/stat.lisp)
+   #:file-stat #:make-file-stat #:precise-time
+   #:+unix-to-universal+ #:universal-from-unix
+   #:fs-size #:fs-mode #:fs-nlink #:fs-uid #:fs-gid #:fs-ino #:fs-dev #:fs-rdev
+   #:fs-atime #:fs-atime-nsec #:fs-mtime #:fs-mtime-nsec #:fs-ctime #:fs-ctime-nsec
+   #:fs-birthtime #:fs-blocks #:fs-blksize
    #:line #:make-line #:copy-line #:line-text #:line-number #:line-source
    #:process #:make-process #:copy-process #:process-pid #:process-ppid
    #:process-user #:process-state #:process-pcpu #:process-pmem

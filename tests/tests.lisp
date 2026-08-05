@@ -317,6 +317,61 @@ ln -s reg link && mkfifo pipe && echo x > noread && chmod 000 noread" dir))
              (funcall function dir))
         (sh (format nil "chmod 644 ~anoread 2>/dev/null; rm -rf ~a" dir dir))))))
 
+(defun test-alien-stat-layout-matches-sb-posix ()
+  "The safety property behind src/stat.lisp.  Reading struct stat through
+sb-alien means trusting a hand-written layout, so every field SB-POSIX also
+knows is compared against it.  A wrong offset shows up here as a mismatch on a
+value we know independently, rather than as plausible nonsense in the
+nanosecond fields nothing else can check."
+  (let* ((path "src/ansi.lisp")
+         (mine (file-stat path))
+         (theirs (sb-posix:lstat path)))
+    (check mine :alien-lstat-succeeded)
+    (when mine
+      (check (= (fs-size mine) (sb-posix:stat-size theirs)) :size-agrees)
+      (check (= (fs-mode mine) (sb-posix:stat-mode theirs)) :mode-agrees)
+      (check (= (fs-ino mine) (sb-posix:stat-ino theirs)) :inode-agrees)
+      (check (= (fs-uid mine) (sb-posix:stat-uid theirs)) :uid-agrees)
+      (check (= (fs-gid mine) (sb-posix:stat-gid theirs)) :gid-agrees)
+      (check (= (fs-nlink mine) (sb-posix:stat-nlink theirs)) :nlink-agrees)
+      (check (= (fs-dev mine) (sb-posix:stat-dev theirs)) :dev-agrees)
+      (check (= (fs-mtime mine) (universal-from-unix (sb-posix:stat-mtime theirs)))
+             :mtime-agrees)
+      (check (= (fs-atime mine) (universal-from-unix (sb-posix:stat-atime theirs)))
+             :atime-agrees))))
+
+(defun test-sub-second-timestamps ()
+  "What SB-POSIX cannot reach: nanoseconds, st_blocks, and Darwin's birthtime."
+  (with-timeout (20 :nanoseconds)
+    (let ((entry (first (collect-pipeline (list (ls "src/ansi.lisp"))))))
+      (dolist (nsec (list (file-entry-mtime-nsec entry)
+                          (file-entry-atime-nsec entry)
+                          (file-entry-ctime-nsec entry)))
+        (check (and (integerp nsec) (<= 0 nsec 999999999)) :nanoseconds-are-in-range))
+      ;; MTIME itself stays whole seconds, so comparing against
+      ;; GET-UNIVERSAL-TIME and DECODE-UNIVERSAL-TIME both still work.
+      (check (integerp (file-entry-mtime entry)) :mtime-is-still-whole-seconds)
+      (check (plusp (file-entry-blocks entry)) :blocks-allocated)
+      (check (plusp (file-entry-blksize entry)) :block-size)
+      ;; A file cannot have been created after it was last written.
+      (check (<= (file-entry-birthtime entry) (file-entry-mtime entry)) :birthtime))
+    ;; PRECISE-TIME is an exact rational: a double cannot hold a universal time
+    ;; to nanosecond resolution, so 1e-9 differences would vanish in a float.
+    (check (rationalp (precise-time 3994773576 329129261)) :precise-time-is-exact)
+    (check (= (precise-time 100 500000000) 201/2) :precise-time-value)
+    (check (eql 100 (precise-time 100 nil)) :precise-time-tolerates-no-fraction)
+    ;; The point of all this: files written inside one second get an order.
+    (with-awkward-directory
+      (lambda (dir)
+        (let* ((entries (collect-pipeline (list (ls dir))))
+               (stamps (mapcar (lambda (e) (precise-time (file-entry-mtime e)
+                                                         (file-entry-mtime-nsec e)))
+                               entries)))
+          (check (= 1 (length (remove-duplicates (mapcar #'file-entry-mtime entries))))
+                 :all-written-within-one-second)
+          (check (> (length (remove-duplicates stamps)) 1)
+                 :but-nanoseconds-tell-them-apart))))))
+
 (defun test-ls-stats-rather-than-opens ()
   "LS used to call FILE-LENGTH on an open stream, which cost open+fstat+close
 per file, lost the size of anything unreadable, and blocked forever on a FIFO.
@@ -1064,6 +1119,8 @@ return the resulting text and point."
                   test-completion
                   test-glob
                   test-ls-stats-rather-than-opens
+                  test-alien-stat-layout-matches-sb-posix
+                  test-sub-second-timestamps
                   test-reader-dispatch
                   test-reader-pipeline
                   test-reader-blocks

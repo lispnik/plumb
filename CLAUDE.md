@@ -7,7 +7,7 @@ carrying Lisp objects, instead of processes and byte streams. SBCL only
 (`sb-thread`, `sb-mop`), no external dependencies, no Quicklisp/ocicl needed.
 
 ```
-sbcl --eval '(asdf:test-system "plumb")'   ; 266 assertions, all passing
+sbcl --eval '(asdf:test-system "plumb")'   ; 288 assertions, all passing
 make                                       ; dump bin/plumb
 sbcl --script demo.lisp
 ```
@@ -52,6 +52,11 @@ sbcl --script demo.lisp
   read permission and blocks forever on a FIFO; `ls` used to hang on a
   directory containing one. `lstat` also describes a symlink rather than
   following it, which is right because `glob` does not resolve them.
+- **A hand-written alien struct layout must be cross-checked.** `src/stat.lisp`
+  declares Darwin's `struct stat` to reach nanoseconds, `st_blocks` and
+  `st_birthtime`. Every field `sb-posix` also knows is asserted equal to it in
+  the suite, so a wrong offset fails on a known value instead of quietly
+  returning plausible nonsense in the fields nothing else can check.
 - **Type checking happens before any thread is spawned** (`check-pipeline`).
   `T` on the consuming side means any object *type*, not the absence of one, so
   nothing may follow a stage that produces `nil`. Reading it the other way let
