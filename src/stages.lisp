@@ -284,12 +284,21 @@ stream here rather than taking one means it is closed on every exit path."
   (with-open-file (in path)
     (emit-lines in path)))
 
-(defstage table (&key columns (stream *standard-output*) (max-width 40))
+(defstage table (&key columns (stream *standard-output*) transpose
+                      (max-width (if transpose nil 40)))
   "Buffer the whole stream, then print it as an aligned table.  A barrier, like
 SORT-BY and for the same reason: a column cannot be sized until the last row
-has arrived.  COLUMNS defaults to the union of FIELDS across the rows."
+has arrived.  COLUMNS defaults to the union of FIELDS across the rows.
+
+TRANSPOSE turns the table on its side: field names become row headings and each
+record grows rightward as its own column.  That is how a wide record becomes
+readable -- PS has thirteen fields, and one process does not fit across a
+terminal as a row.  Useful for few records; MAX-WIDTH then defaults to NIL,
+since transposing is usually how you go to read a long value in full.
+
+  ps | take 1 | table :transpose"
   (:consumes :objects) (:produces nil) (:barrier t)
   (let ((rows (make-array 16 :adjustable t :fill-pointer 0)))
     (do-input (x) (vector-push-extend x rows))
-    (render-table (coerce rows 'list)
-                  :columns columns :stream stream :max-width max-width)))
+    (render-table (coerce rows 'list) :columns columns :stream stream
+                                      :transpose transpose :max-width max-width)))

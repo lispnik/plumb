@@ -7,7 +7,7 @@ carrying Lisp objects, instead of processes and byte streams. SBCL only
 (`sb-thread`, `sb-mop`), no external dependencies, no Quicklisp/ocicl needed.
 
 ```
-sbcl --eval '(asdf:test-system "plumb")'   ; 237 assertions, all passing
+sbcl --eval '(asdf:test-system "plumb")'   ; 249 assertions, all passing
 make                                       ; dump bin/plumb
 sbcl --script demo.lisp
 ```
@@ -168,3 +168,6 @@ sbcl --script demo.lisp
 - `do-input` declares its variable `ignorable`; don't add `(declare (ignore ...))`
   inside the body, it isn't a valid declaration position there.
 - New stages go in `src/stages.lisp`, new exports in `src/package.lisp`.
+- **Pad before painting.** `paint` adds SGR escapes that `~va` counts as
+  visible characters, so any alignment has to be computed on the bare string
+  first. `visible-width` exists for the same reason in `lineedit.lisp`.

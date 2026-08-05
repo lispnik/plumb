@@ -527,6 +527,60 @@ lines, differently on every run."
                (render-table (list (list :a 1 :b nil)) :stream s))))
     (check (not (search "nil" out)) :nil-cells-render-empty)))
 
+(defun lines-of (text)
+  (with-input-from-string (in text)
+    (loop for line = (read-line in nil nil) while line collect line)))
+
+(defun test-transposed-table ()
+  "Field names down the left, each record growing rightward as its own column."
+  (let* ((rows (list (list :name "a" :size 1) (list :name "bbbb" :size 22)))
+         (lines (lines-of (with-output-to-string (s)
+                            (render-table rows :stream s :transpose t)))))
+    ;; One line per FIELD now, not per record.
+    (check (= 2 (length lines)) :one-line-per-field)
+    (check (string= "name  a  bbbb" (first lines)) :records-grow-rightward)
+    (check (string= "size  1  22" (second lines)) :second-field-on-its-own-line)
+    (check (string= "size  1  22" (second lines)) :widths-are-per-record-column))
+  ;; Left-aligned throughout: a column holds one record, so its values are
+  ;; heterogeneous and right-aligning some rows would read as ragged.  A record
+  ;; whose widest value is wider than its number makes the padding visible.
+  (let ((lines (lines-of (with-output-to-string (s)
+                           (render-table (list (list :name "abcd" :size 1)
+                                               (list :name "z" :size 9))
+                                         :stream s :transpose t)))))
+    (check (string= "name  abcd  z" (first lines)) :first-field)
+    ;; Left: "1   ".  Were it right-aligned this would read "size     1  9".
+    (check (string= "size  1     9" (second lines)) :values-are-left-aligned))
+  ;; :COLUMNS selects and orders which fields appear as rows.
+  (let ((lines (lines-of (with-output-to-string (s)
+                           (render-table (list (list :a 1 :b 2 :c 3))
+                                         :stream s :transpose t
+                                         :columns (list :c :a))))))
+    (check (equal '("c  3" "a  1") lines) :columns-select-and-order-the-rows))
+  ;; MAX-WIDTH defaults to NIL here: transposing is how you go to read a long
+  ;; value in full.  It still caps when asked.
+  (let ((long (make-string 60 :initial-element #\x)))
+    (check (search long (with-output-to-string (s)
+                          (render-table (list (list :a long)) :stream s :transpose t)))
+           :no-truncation-by-default)
+    (check (search "…" (with-output-to-string (s)
+                         (render-table (list (list :a long)) :stream s
+                                       :transpose t :max-width 10)))
+           :max-width-still-caps))
+  ;; NIL is still absent rather than the word, and no rows lays out nothing.
+  (check (not (search "nil" (with-output-to-string (s)
+                              (render-table (list (list :a 1 :b nil))
+                                            :stream s :transpose t))))
+         :nil-cells-still-render-empty)
+  (check (string= "" (with-output-to-string (s)
+                       (render-table '() :stream s :transpose t)))
+         :no-rows-prints-nothing)
+  ;; The regression this change could most easily cause.
+  (let ((rows (list (list :name "a" :size 1) (list :name "bbbb" :size 22))))
+    (check (equal '("name  size" "a        1" "bbbb    22")
+                  (lines-of (with-output-to-string (s) (render-table rows :stream s))))
+           :untransposed-rendering-is-unchanged)))
+
 (defun test-err-port-is-shared-by-every-stage ()
   "Every stage SENDs to one :err channel, so the first to finish must not close
 it for the others.  A consumer draining live -- not after JOIN -- is the case
@@ -969,6 +1023,7 @@ return the resulting text and point."
                   test-output-is-serialised
                   test-present
                   test-table
+                  test-transposed-table
                   test-err-port-is-shared-by-every-stage
                   test-sh-source
                   test-sh-exit-status

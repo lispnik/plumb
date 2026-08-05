@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 237 assertions
+(asdf:test-system "plumb")     ; 249 assertions
 ```
 
 ```
@@ -516,6 +516,40 @@ lineedit.lisp  17802
 cli.lisp       14942
 help.lisp      11357
 ```
+
+`table :transpose` turns it on its side — field names become row headings and
+each record grows rightward as its own column. That is how a wide record
+becomes readable; `ps` has thirteen fields and one process does not fit across
+a terminal as a row:
+
+```
+$ plumb 'ps | take 1 | table :transpose'
+pid      1
+ppid     0
+user     root
+state    Ss
+rss      15482880
+etime    06-10:28:28
+name     launchd
+command  /sbin/launchd
+```
+
+Useful for few records, as the name suggests — several sit side by side with
+nothing between them:
+
+```
+$ plumb 'ps | sort-by .rss :desc | take 3 | table :transpose :columns (list :pid :user :rss :name)'
+pid   70856      41050      2543
+user  mkennedy   mkennedy   mkennedy
+rss   513097728  369934336  294469632
+name  IntelliJ   claude     com.apple.WebKit.WebContent
+```
+
+Everything is left-aligned here, unlike a normal table: a column now holds one
+*record*, so its values are heterogeneous — an integer `pid` beside a string
+`user` — and right-aligning some rows and not others inside one column reads as
+ragged. `max-width` also defaults to `nil` rather than 40, since transposing is
+usually how you go to read a long value in full.
 
 Give a type its own look with a method:
 

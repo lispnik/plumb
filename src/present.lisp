@@ -80,8 +80,45 @@ look absent."
                                     (format s "~v@a" width cell)
                                     (format s "~va" width cell))))))
 
-(defun render-table (rows &key columns (stream *standard-output*) (max-width 40))
-  "Print ROWS as an aligned table.  Needs all of ROWS up front."
+(defun render-transposed (headers cells stream)
+  "Field names down the left, one column per record growing rightward.
+
+Each printed line is one field, so FORMAT-TABLE-ROW does the work unchanged --
+it is handed (name value-from-record-1 value-from-record-2 ...).
+
+Everything is left-aligned on purpose: a column now holds one *record*, so its
+values are heterogeneous -- an integer PID beside a string USER -- and
+right-aligning some rows and not others inside one column reads as ragged.
+NUMERIC-COLUMN-P simply does not apply to this arrangement."
+  (let ((label-width (reduce #'max headers :key #'length :initial-value 0))
+        (widths (mapcar (lambda (record)
+                          (reduce #'max record :key #'length :initial-value 0))
+                        cells)))
+    (with-output-lock
+      (loop for header in headers
+            for i from 0
+            do ;; Pad before painting: PAINT adds SGR escapes, and ~va would
+               ;; count them as visible characters.  Same trap VISIBLE-WIDTH
+               ;; exists for in lineedit.lisp.
+               (write-string (paint (format nil "~va" label-width header) :bold) stream)
+               (write-string "  " stream)
+               (write-line (format-table-row (mapcar (lambda (record) (nth i record)) cells)
+                                             widths
+                                             (make-list (length cells)))
+                           stream))
+      (force-output stream)))
+  (values))
+
+(defun render-table (rows &key columns (stream *standard-output*) transpose
+                            (max-width (if transpose nil 40)))
+  "Print ROWS as an aligned table.  Needs all of ROWS up front.
+
+With TRANSPOSE, field names become row headings and each record grows rightward
+as its own column -- which is how a wide record becomes readable, and why
+MAX-WIDTH then defaults to NIL: transposing is usually how you go to read a
+long value in full."
+  (when (and transpose (null rows))
+    (return-from render-table (values)))   ; nothing to lay out
   (let* ((columns (or columns (table-columns rows)))
          (headers (mapcar (lambda (c) (string-downcase (string c))) columns))
          (cells (mapcar (lambda (row)
@@ -93,6 +130,8 @@ look absent."
                                        :key (lambda (row) (length (nth i row)))
                                        :initial-value (length header))))
          (right (mapcar (lambda (c) (numeric-column-p rows c)) columns)))
+    (when transpose
+      (return-from render-table (render-transposed headers cells stream)))
     ;; The whole table, not each row: another branch's output must not land in
     ;; the middle of it.
     (with-output-lock
