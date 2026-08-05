@@ -18,12 +18,108 @@ downstream TAKE really does tear the source down."
         while (or (null limit) (< i limit))
         do (emit i)))
 
-(defstruct file-entry path name size mtime dir-p)
+(defstruct file-entry
+  path name size mtime dir-p
+  ;; Everything below comes from the same single LSTAT as SIZE and MTIME.
+  type mode nlink uid gid user group ino atime ctime target)
 
 (defmethod present ((object file-entry))
-  (if (file-entry-dir-p object)
-      (concatenate 'string (file-entry-name object) "/")
-      (file-entry-name object)))
+  ;; ls -F's suffixes: they cost nothing once TYPE and MODE are known, and a
+  ;; one-line rendering that cannot say "directory" is throwing the answer away.
+  (let ((name (file-entry-name object)))
+    ;; TYPE comes from LSTAT, but DIR-P predates it and is still a public
+    ;; field, so an entry built by hand must not lose its slash.
+    (case (or (file-entry-type object)
+              (and (file-entry-dir-p object) :directory))
+      (:directory (concatenate 'string name "/"))
+      (:symlink   (concatenate 'string name "@"))
+      (:fifo      (concatenate 'string name "|"))
+      (:socket    (concatenate 'string name "="))
+      (t (if (and (file-entry-mode object)
+                  (logtest (file-entry-mode object)
+                           (logior sb-posix:s-ixusr sb-posix:s-ixgrp sb-posix:s-ixoth)))
+             (concatenate 'string name "*")
+             name)))))
+
+(defun file-type-of (mode)
+  (cond ((sb-posix:s-isdir mode) :directory)
+        ((sb-posix:s-islnk mode) :symlink)
+        ((sb-posix:s-isreg mode) :file)
+        ((sb-posix:s-isfifo mode) :fifo)
+        ((sb-posix:s-issock mode) :socket)
+        ((sb-posix:s-ischr mode) :character-device)
+        ((sb-posix:s-isblk mode) :block-device)
+        (t :other)))
+
+(defun mode-string (mode type)
+  "MODE as ls -l writes it: a type character then three rwx triples, with the
+setuid, setgid and sticky bits replacing the matching x."
+  (let ((s (make-string 10 :initial-element #\-)))
+    (setf (char s 0) (case type
+                       (:directory #\d) (:symlink #\l) (:fifo #\p) (:socket #\s)
+                       (:character-device #\c) (:block-device #\b) (t #\-)))
+    (loop for (bit index char) in
+          (list (list sb-posix:s-irusr 1 #\r) (list sb-posix:s-iwusr 2 #\w)
+                (list sb-posix:s-ixusr 3 #\x)
+                (list sb-posix:s-irgrp 4 #\r) (list sb-posix:s-iwgrp 5 #\w)
+                (list sb-posix:s-ixgrp 6 #\x)
+                (list sb-posix:s-iroth 7 #\r) (list sb-posix:s-iwoth 8 #\w)
+                (list sb-posix:s-ixoth 9 #\x))
+          when (logtest mode bit) do (setf (char s index) char))
+    (flet ((special (bit index set unset)
+             (when (logtest mode bit)
+               (setf (char s index) (if (char= (char s index) #\x) set unset)))))
+      (special sb-posix:s-isuid 3 #\s #\S)
+      (special sb-posix:s-isgid 6 #\s #\S)
+      (special sb-posix:s-isvtx 9 #\t #\T))
+    s))
+
+(defun name-for-id (id cache lookup name-of)
+  "The name for a uid or gid, memoised.  CACHE is local to one LS, so there is
+no shared table to lock, and a listing has only a handful of distinct ids."
+  (multiple-value-bind (name found) (gethash id cache)
+    (if found
+        name
+        (setf (gethash id cache)
+              (let ((entry (ignore-errors (funcall lookup id))))
+                (when entry (ignore-errors (funcall name-of entry))))))))
+
+(defun stat-file-entry (path users groups)
+  "One LSTAT, and everything a FILE-ENTRY knows.
+
+LSTAT rather than STAT because GLOB does not resolve symlinks, so the link
+itself is what is in the stream.  And LSTAT rather than opening the file: the
+old code called FILE-LENGTH on an open stream, which cost open+fstat+close per
+file, lost the size of anything unreadable, and blocked forever on a FIFO."
+  (let* ((directory-p (null (pathname-name path)))
+         (stat (ignore-errors (sb-posix:lstat path))))
+    (when stat
+      (let* ((mode (sb-posix:stat-mode stat))
+             (type (file-type-of mode)))
+        (make-file-entry
+         :path path
+         :name (if directory-p (car (last (pathname-directory path))) (file-namestring path))
+         :dir-p (eq type :directory)
+         :type type
+         :size (sb-posix:stat-size stat)
+         :mode mode
+         :nlink (sb-posix:stat-nlink stat)
+         :uid (sb-posix:stat-uid stat)
+         :gid (sb-posix:stat-gid stat)
+         :user (name-for-id (sb-posix:stat-uid stat) users
+                            #'sb-posix:getpwuid #'sb-posix:passwd-name)
+         :group (name-for-id (sb-posix:stat-gid stat) groups
+                             #'sb-posix:getgrgid #'sb-posix:group-name)
+         :ino (sb-posix:stat-ino stat)
+         ;; MTIME stays a universal time, as FILE-WRITE-DATE gave it, so
+         ;; existing pipelines comparing against GET-UNIVERSAL-TIME still work.
+         :mtime (unix-to-universal-time (sb-posix:stat-mtime stat))
+         :atime (unix-to-universal-time (sb-posix:stat-atime stat))
+         :ctime (unix-to-universal-time (sb-posix:stat-ctime stat))
+         :target (when (eq type :symlink) (ignore-errors (sb-posix:readlink path))))))))
+
+(defun unix-to-universal-time (seconds)
+  (when seconds (+ seconds (encode-universal-time 0 0 0 1 1 1970 0))))
 
 (defun as-directory (pathname)
   "PATHNAME as a directory, whether or not it was written with a trailing /."
@@ -67,21 +163,18 @@ write (ls \".gitignore\") -- in word mode, ls \".gitignore\"."))
 
 (defstage ls (&optional (pattern *default-pathname-defaults*))
   "Emit a FILE-ENTRY per match.  A directory lists its members; a pattern
-containing * ? or [...] globs, and ** descends into subdirectories."
+containing * ? or [...] globs, and ** descends into subdirectories.
+
+One LSTAT per entry supplies everything: size, the three timestamps, type,
+permissions, link count, owner and group, and inode.  SIZE is now what the
+filesystem says even for a directory -- filter on .type rather than relying on
+a missing size to mean `not a file'."
   (:consumes nil) (:produces :objects)
-  (dolist (p (glob pattern))
-    (let ((dir-p (null (pathname-name p))))
-      (emit (make-file-entry
-             :path p
-             :name (if dir-p
-                       (car (last (pathname-directory p)))
-                       (file-namestring p))
-             :dir-p dir-p
-             :size (unless dir-p
-                     (ignore-errors
-                      (with-open-file (s p :element-type '(unsigned-byte 8))
-                        (file-length s))))
-             :mtime (ignore-errors (file-write-date p)))))))
+  (let ((users (make-hash-table)) (groups (make-hash-table)))
+    (dolist (path (glob pattern))
+      ;; NIL when the entry vanished between the directory scan and the stat.
+      (let ((entry (stat-file-entry path users groups)))
+        (when entry (emit entry))))))
 
 (defstruct line text number source)
 

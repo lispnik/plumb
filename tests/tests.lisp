@@ -303,6 +303,54 @@ Reading it as the latter let a sink follow a sink, and EXPLAIN said fine."
          :completes-variables-too)
   (check (null (plumb.cli::plumb-completions "zzzznope")) :no-match-is-empty))
 
+(defun with-awkward-directory (function)
+  "A directory holding the file types that used to break LS: a FIFO it hung
+on, a file it could not open, a symlink, and an executable."
+  (let ((dir "/tmp/plumb-ls-test/"))
+    (flet ((sh (command)
+             (sb-ext:run-program "/bin/sh" (list "-c" command) :search nil :wait t)))
+      (unwind-protect
+           (progn
+             (sh (format nil "rm -rf ~a; mkdir -p ~a" dir dir))
+             (sh (format nil "cd ~a && echo hello > reg && chmod +x reg && ~
+ln -s reg link && mkfifo pipe && echo x > noread && chmod 000 noread" dir))
+             (funcall function dir))
+        (sh (format nil "chmod 644 ~anoread 2>/dev/null; rm -rf ~a" dir dir))))))
+
+(defun test-ls-stats-rather-than-opens ()
+  "LS used to call FILE-LENGTH on an open stream, which cost open+fstat+close
+per file, lost the size of anything unreadable, and blocked forever on a FIFO.
+One LSTAT does all of it and cannot block."
+  (with-timeout (20 :ls-lstat)
+    (with-awkward-directory
+      (lambda (dir)
+        (let* ((entries (collect-pipeline (list (ls dir))))
+               (by-name (lambda (n) (find n entries :key #'file-entry-name :test #'string=))))
+          (check (= 4 (length entries)) :listed-everything)
+          ;; The regression that matters: a FIFO must not be opened.
+          (let ((pipe (funcall by-name "pipe")))
+            (check (eq :fifo (file-entry-type pipe)) :fifo-is-a-fifo)
+            (check (eql 0 (file-entry-size pipe)) :fifo-has-a-size-not-a-hang))
+          ;; A file we cannot open still has a size, because nothing opens it.
+          (let ((noread (funcall by-name "noread")))
+            (check (eql 2 (file-entry-size noread)) :unreadable-files-keep-their-size)
+            (check (eq :file (file-entry-type noread)) :unreadable-files-have-a-type))
+          ;; LSTAT, not STAT: the link itself is what GLOB put in the stream.
+          (let ((link (funcall by-name "link")))
+            (check (eq :symlink (file-entry-type link)) :symlink-is-not-followed)
+            (check (string= "reg" (file-entry-target link)) :readlink-gives-the-target))
+          (let ((reg (funcall by-name "reg")))
+            (check (eql 6 (file-entry-size reg)) :size)
+            (check (string= (mode-string (file-entry-mode reg) :file) "-rwxr-xr-x")
+                   :mode-string-matches-ls-l)
+            (check (eql 1 (file-entry-nlink reg)) :nlink)
+            (check (integerp (file-entry-ino reg)) :inode)
+            (check (stringp (file-entry-user reg)) :owner-name-was-looked-up)
+            ;; MTIME stays a universal time, so pipelines comparing it against
+            ;; GET-UNIVERSAL-TIME still work.
+            (check (< (abs (- (file-entry-mtime reg) (get-universal-time))) 300)
+                   :mtime-is-still-a-universal-time)))))))
+
 ;;; --------------------------------------------------- the word-mode reader
 ;;;
 ;;; READ-SHELL is a source-to-source pass, so most of it tests by comparing
@@ -503,6 +551,12 @@ lines, differently on every run."
   (check (string= "hello" (present (make-line :text "hello" :number 1))) :line-is-its-text)
   (check (string= "a.lisp" (present (make-file-entry :name "a.lisp"))) :file-entry-is-its-name)
   (check (string= "src/" (present (make-file-entry :name "src" :dir-p t))) :directories-get-a-slash)
+  (check (string= "src/" (present (make-file-entry :name "src" :type :directory))) :type-gives-a-slash-too)
+  (check (string= "l@" (present (make-file-entry :name "l" :type :symlink))) :symlinks-get-an-at)
+  (check (string= "p|" (present (make-file-entry :name "p" :type :fifo))) :fifos-get-a-bar)
+  (check (string= "x*" (present (make-file-entry :name "x" :type :file
+                                                 :mode sb-posix:s-ixusr)))
+         :executables-get-a-star)
   ;; The one-object-one-line rule, against a hostile binding.  A stage thread
   ;; does not inherit this, which is exactly why PRESENT and not the caller.
   (let ((*print-pretty* t) (*print-right-margin* 10))
@@ -1009,6 +1063,7 @@ return the resulting text and point."
                   test-history-persists
                   test-completion
                   test-glob
+                  test-ls-stats-rather-than-opens
                   test-reader-dispatch
                   test-reader-pipeline
                   test-reader-blocks

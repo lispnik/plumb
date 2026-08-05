@@ -7,7 +7,7 @@
   :version "0.1.0"
   ;; sb-thread / sb-mop are in the SBCL core; sb-introspect is a contrib, used
   ;; only so HELP can show a lambda list for the non-stage built-ins.
-  :depends-on ((:require :sb-introspect))
+  :depends-on ((:require :sb-introspect) (:require :sb-posix))
   :serial t
   :pathname "src"
   :components ((:file "package")

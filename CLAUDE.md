@@ -7,7 +7,7 @@ carrying Lisp objects, instead of processes and byte streams. SBCL only
 (`sb-thread`, `sb-mop`), no external dependencies, no Quicklisp/ocicl needed.
 
 ```
-sbcl --eval '(asdf:test-system "plumb")'   ; 249 assertions, all passing
+sbcl --eval '(asdf:test-system "plumb")'   ; 266 assertions, all passing
 make                                       ; dump bin/plumb
 sbcl --script demo.lisp
 ```
@@ -48,6 +48,10 @@ sbcl --script demo.lisp
   and fan-out lets several stages print at once; without it two branches
   duplicate and drop each other's lines, differently on every run. Per line for
   `print-items`/`peek`, around the whole render for `table`.
+- **Metadata comes from one `lstat`, never from opening the file.** `open` needs
+  read permission and blocks forever on a FIFO; `ls` used to hang on a
+  directory containing one. `lstat` also describes a symlink rather than
+  following it, which is right because `glob` does not resolve them.
 - **Type checking happens before any thread is spawned** (`check-pipeline`).
   `T` on the consuming side means any object *type*, not the absence of one, so
   nothing may follow a stage that produces `nil`. Reading it the other way let

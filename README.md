@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 249 assertions
+(asdf:test-system "plumb")     ; 266 assertions
 ```
 
 ```
@@ -61,6 +61,34 @@ against would be a silent wrong answer rather than an error.
 ls src/ | where {(> .size 10kb)}
 sh "find . -type f" | take 5
 ```
+
+`ls` costs **one `lstat` per entry**, and that single call supplies everything:
+
+| | |
+|---|---|
+| `.name` `.size` `.mtime` `.atime` `.ctime` | |
+| `.type` | `:file` `:directory` `:symlink` `:fifo` `:socket` `:character-device` `:block-device` |
+| `.mode` `.nlink` `.uid` `.gid` `.user` `.group` `.ino` | `mode-string` renders `-rwxr-xr-x` |
+| `.target` | where a symlink points (one `readlink`, symlinks only) |
+| `.dir-p` | kept, and equivalent to `(eq .type :directory)` |
+
+`present` says what things are, `ls -F` style — `dir/`, `link@`, `pipe|`,
+`socket=`, `executable*`.
+
+It used to call `file-length` on an open stream, which cost `open`+`fstat`+
+`close` per file *plus* a `stat` for the mtime. That was four syscalls for two
+fields, it lost the size of anything it could not open, and it **hung forever
+on a FIFO** — `open` on a named pipe waits for a writer. One `lstat` cannot
+block, needs no read permission, and describes the link rather than following
+it. Listing 2962 files went from 210–320 ms to 100–140 ms, against a 80 ms
+floor for the directory scan alone.
+
+Owner and group names are looked up once per distinct id, in a table local to
+each `ls`, so a listing costs a handful of lookups regardless of file count.
+
+One behaviour changed: `.size` is now what the filesystem says even for a
+directory, where it used to be `nil`. Filter on `.type` rather than relying on
+a missing size to mean "not a file".
 
 ### Globbing
 

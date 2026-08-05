@@ -40,7 +40,10 @@
    ;; misc
    ;; COPY-* are the escape hatch TEE documents: copying is a stage.
    #:file-entry #:make-file-entry #:copy-file-entry #:file-entry-path #:file-entry-name
-   #:file-entry-size #:file-entry-mtime #:file-entry-dir-p
+   #:file-entry-size #:file-entry-mtime #:file-entry-dir-p #:file-entry-type
+   #:file-entry-mode #:file-entry-nlink #:file-entry-uid #:file-entry-gid
+   #:file-entry-user #:file-entry-group #:file-entry-ino #:file-entry-atime
+   #:file-entry-ctime #:file-entry-target #:mode-string #:file-type-of
    #:line #:make-line #:copy-line #:line-text #:line-number #:line-source
    #:process #:make-process #:copy-process #:process-pid #:process-ppid
    #:process-user #:process-state #:process-pcpu #:process-pmem
