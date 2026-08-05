@@ -13,6 +13,7 @@
   :components ((:file "package")
                (:file "ansi")
                (:file "stat")
+               (:file "glob")
                (:file "channel")
                (:file "field")
                (:file "present")

@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 288 assertions
+(asdf:test-system "plumb")     ; 316 assertions
 ```
 
 ```
@@ -130,13 +130,28 @@ $ plumb 'ls src/[cf]*.lisp'             # character classes
 $ plumb 'ls src/?ield.lisp'             # ? is one character
 ```
 
-A directory lists its members with or without the trailing slash, a plain file
-names itself, and a pattern matching nothing yields nothing rather than an
-error. Results are **sorted**, so pipelines built on `ls` are reproducible.
+Ranges (`[a-z]`), negation (`[!a]` or `[^a]`), and backslash escapes all work,
+and `*` skips dotfiles as a shell's does — write `.*` for those. A directory
+lists its members with or without the trailing slash, a plain file names
+itself, and a pattern matching nothing yields nothing rather than an error.
+Results are **sorted**, so pipelines built on `ls` are reproducible.
 
-Note that shell `*` and Common Lisp `*` do not mean the same thing — CL's means
-*"any name, no type"*, which would silently miss every file with an extension —
-so `glob` translates before handing the pattern to `directory`.
+Globbing does **not** go through CL's `directory` and pathname patterns, which
+got five things wrong — three of them silently. `[a-c]` was the literal set
+`{a,-,c}`, so ranges skipped members; `[!a]` was `{!,a}`, so negation matched
+the *opposite*; `*` matched dotfiles; matching was case-sensitive even on a
+case-insensitive filesystem; and files whose names contained `*` or `[`
+**vanished from `ls` entirely** — `directory` returned them with the
+metacharacter as a pattern object, `file-namestring` re-escaped it, `lstat` on
+the escaped path failed, and the entry was dropped without a word.
+
+So `src/glob.lisp` reads entries with `readdir` as plain strings, matches them
+with its own fnmatch, and builds pathnames only at the end with
+`parse-native-namestring`, which treats `*` as the character it is.
+
+Descending a named component **follows** symlinks, as a shell does — `/tmp` is
+itself a symlink on macOS. `**` does **not**, so a link pointing back up a tree
+cannot recurse forever.
 
 There is no glob-in-stage-position shorthand: write `ls *.lisp`, not `*.lisp`.
 Same reasoning as `sh` — an unknown first word stays an error.
@@ -630,6 +645,7 @@ block macro a `{...}` reader would expand to:
 |---|---|
 | `src/ansi.lisp` | terminal colour, shared by the prompt and `help` |
 | `src/stat.lisp` | one `lstat` through `sb-alien`: nanoseconds, blocks, birthtime |
+| `src/glob.lisp` | shell globbing over `readdir`, not CL pathname patterns |
 | `src/channel.lisp` | bounded FIFO, backpressure, two-sided close |
 | `src/field.lisp` | uniform field access, `$` block macro |
 | `src/reader.lisp` | word mode: `\|`, `{...}`, `.field`, earmuffs |

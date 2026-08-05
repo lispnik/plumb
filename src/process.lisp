@@ -157,10 +157,6 @@ own stdout is inherited, so `(to-sh \"wc -l\")` prints where you would expect."
 (defconstant +ps-fixed-fields+ 10
   "How many space-free columns precede ARGS.")
 
-(defun basename (path)
-  (let ((slash (position #\/ path :from-end t)))
-    (if slash (subseq path (1+ slash)) path)))
-
 (defun kilobytes-to-bytes (text)
   (let ((kb (parse-integer text :junk-allowed t)))
     (when kb (* kb 1024))))

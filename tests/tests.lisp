@@ -186,6 +186,85 @@ leaves it plain and the assertions can look for bare text."
 
 (defun names (paths) (mapcar #'file-namestring paths))
 
+(defun test-glob-matching ()
+  "The matcher itself.  CL pathname patterns got three of these silently
+wrong, which is why globbing no longer goes through them."
+  ;; Ranges.  [a-c] used to be the literal set {a,-,c}, so it skipped b.
+  (check (glob-match "[a-c].txt" "b.txt") :ranges)
+  (check (not (glob-match "[a-c].txt" "d.txt")) :ranges-exclude)
+  ;; Negation.  [!a] used to be the set {!,a}, so it matched the opposite.
+  (check (glob-match "[!a]*.txt" "b.txt") :negation-with-bang)
+  (check (not (glob-match "[!a]*.txt" "a.txt")) :negation-actually-negates)
+  (check (glob-match "[^ab]x.txt" "cx.txt") :negation-with-caret)
+  ;; A ] first in the set is literal, as in every shell.
+  (check (glob-match "[]]" "]") :closing-bracket-first-is-literal)
+  ;; An unterminated [ is a literal [.
+  (check (glob-match "[abc" "[abc") :unterminated-set-is-literal)
+  ;; The leading-dot rule: * must not find a dotfile, as in a shell.
+  (check (not (glob-match "*" ".hidden")) :star-skips-dotfiles)
+  (check (not (glob-match "*.txt" ".a.txt")) :star-skips-dotfiles-with-a-type)
+  (check (glob-match ".*" ".hidden") :an-explicit-dot-finds-them)
+  ;; Escapes, which is how a name holding a metacharacter is written.
+  (check (glob-match "star\\*.txt" "star*.txt") :escaped-star-is-literal)
+  (check (not (glob-match "star\\*.txt" "starry.txt")) :escaped-star-does-not-glob)
+  (check (glob-match "br\\[a\\].txt" "br[a].txt") :escaped-brackets)
+  ;; Ordinary cases.
+  (check (glob-match "*" "anything") :star)
+  (check (glob-match "a*c" "abbbc") :star-in-the-middle)
+  (check (glob-match "?.txt" "a.txt") :question-mark)
+  (check (not (glob-match "?.txt" "ab.txt")) :question-mark-is-exactly-one)
+  (check (glob-pattern-p "a*b") :pattern-detected)
+  (check (not (glob-pattern-p "a\\*b")) :escaped-metacharacter-is-not-a-pattern))
+
+(defun test-glob-finds-awkward-names ()
+  "The bug this replaced: DIRECTORY handed back pathnames whose name held * as
+a pattern object, FILE-NAMESTRING re-escaped it, LSTAT on the escaped path
+failed, and LS dropped the entry without a word."
+  (with-timeout (20 :awkward-names)
+    (let ((dir "/tmp/plumb-glob-test/"))
+      (unwind-protect
+           (flet ((sh (c) (sb-ext:run-program "/bin/sh" (list "-c" c) :search nil :wait t)))
+             (sh (format nil "rm -rf ~a; mkdir -p ~a" dir dir))
+             (sh (format nil "cd ~a && : > 'star*.txt' && : > 'br[a].txt' && ~
+: > plain.txt && : > .hidden" dir))
+             (let ((names (mapcar #'file-entry-name (collect-pipeline (list (ls dir))))))
+               ;; All four, with their real names -- none escaped, none missing.
+               (check (member "star*.txt" names :test #'string=) :star-in-a-name-survives)
+               (check (member "br[a].txt" names :test #'string=) :brackets-in-a-name-survive)
+               (check (= 4 (length names)) :a-directory-listing-shows-everything))
+             ;; A pattern, though, follows the shell dotfile rule.
+             (let ((names (mapcar #'file-entry-name
+                                  (collect-pipeline (list (ls (concatenate 'string dir "*")))))))
+               (check (not (member ".hidden" names :test #'string=)) :a-pattern-skips-dotfiles)
+               (check (member "star*.txt" names :test #'string=) :and-still-finds-awkward-names)))
+        (sb-ext:run-program "/bin/sh" (list "-c" (format nil "rm -rf ~a" dir))
+                            :search nil :wait t)))))
+
+(defun test-glob-and-symlinks ()
+  "Descending a named component follows symlinks, as a shell does; ** does not,
+so a link pointing back up cannot recurse forever.  /tmp is itself a symlink on
+macOS, so getting the first half wrong made every pattern under it match
+nothing."
+  (with-timeout (25 :glob-symlinks)
+    (let ((dir "/tmp/plumb-glob-link-test/"))
+      (unwind-protect
+           (flet ((sh (c) (sb-ext:run-program "/bin/sh" (list "-c" c) :search nil :wait t)))
+             (sh (format nil "rm -rf ~a; mkdir -p ~asub" dir dir))
+             (sh (format nil "cd ~a && : > top.txt && : > sub/deep.txt && ln -s .. sub/loop"
+                         dir))
+             ;; /tmp is a symlink; a pattern under it must still match.
+             (check (glob (concatenate 'string dir "*.txt")) :descends-through-a-symlinked-parent)
+             ;; ** must terminate despite sub/loop pointing back up.
+             (let ((names (mapcar (lambda (p) (basename (sb-ext:native-namestring p)))
+                                  (glob (concatenate 'string dir "**/*.txt")))))
+               (check (member "top.txt" names :test #'string=) :double-star-finds-the-top)
+               (check (member "deep.txt" names :test #'string=) :double-star-descends)
+               ;; Each file once: following the loop would repeat them.
+               (check (= (length names) (length (remove-duplicates names :test #'string=)))
+                      :double-star-does-not-follow-a-loop)))
+        (sb-ext:run-program "/bin/sh" (list "-c" (format nil "rm -rf ~a" dir))
+                            :search nil :wait t)))))
+
 (defun test-glob ()
   "GLOB backs LS.  Run from the project root, which the test suite is."
   (with-timeout (10 :glob)
@@ -1118,6 +1197,9 @@ return the resulting text and point."
                   test-history-persists
                   test-completion
                   test-glob
+                  test-glob-matching
+                  test-glob-finds-awkward-names
+                  test-glob-and-symlinks
                   test-ls-stats-rather-than-opens
                   test-alien-stat-layout-matches-sb-posix
                   test-sub-second-timestamps

@@ -96,14 +96,18 @@ LSTAT rather than STAT because GLOB does not resolve symlinks, so the link
 itself is what is in the stream.  And LSTAT rather than opening the file: the
 old code called FILE-LENGTH on an open stream, which cost open+fstat+close per
 file, lost the size of anything unreadable, and blocked forever on a FIFO."
-  (let* ((directory-p (null (pathname-name path)))
-         (stat (ignore-errors (file-stat path))))
+  (let* ((native (sb-ext:native-namestring path))
+         (directory-p (null (pathname-name path)))
+         (stat (ignore-errors (file-stat native))))
     (when stat
       (let* ((mode (fs-mode stat))
              (type (file-type-of mode)))
         (make-file-entry
          :path path
-         :name (if directory-p (car (last (pathname-directory path))) (file-namestring path))
+         ;; FILE-NAMESTRING escapes * and [ back into the name, and LSTAT on
+         ;; the escaped path then fails -- which is how files with awkward
+         ;; names used to disappear from LS.  Take the basename of the string.
+         :name (basename (string-right-trim "/" native))
          :dir-p (eq type :directory)
          :type type
          :size (fs-size stat)
@@ -125,47 +129,7 @@ file, lost the size of anything unreadable, and blocked forever on a FIFO."
          :ctime (fs-ctime stat) :ctime-nsec (fs-ctime-nsec stat)
          :birthtime (fs-birthtime stat)
          :blocks (fs-blocks stat) :blksize (fs-blksize stat)
-         :target (when (eq type :symlink) (ignore-errors (sb-posix:readlink path))))))))
-
-(defun as-directory (pathname)
-  "PATHNAME as a directory, whether or not it was written with a trailing /."
-  (if (pathname-name pathname)
-      (make-pathname :directory (append (or (pathname-directory pathname) '(:relative))
-                                        (list (file-namestring pathname)))
-                     :name nil :type nil :defaults pathname)
-      pathname))
-
-(defun shell-glob-pathname (pathname)
-  "Shell glob semantics on a CL pathname.  Shell * means anything; CL * means
-`any name, no type', so *.lisp works untranslated but * and f* do not -- a
-wild name with no type has to match any type as well."
-  (if (and (wild-pathname-p pathname :name) (null (pathname-type pathname)))
-      (make-pathname :type :wild :defaults pathname)
-      pathname))
-
-(defun glob (spec)
-  "Pathnames matching SPEC, sorted so output is stable.  A pattern containing
-* ? or [...] globs and ** descends; a directory lists its members; anything
-else names itself."
-  ;; A bare .name is the field-accessor shorthand, so a dotfile written without
-  ;; quotes arrives here as a block instead of a path.  Saying so beats "the
-  ;; value #<FUNCTION (LAMBDA (IT))> is not of type ..." by a wide margin.
-  (when (functionp spec)
-    (error "A bare .name is a field accessor, so a dotfile needs quoting: ~
-write (ls \".gitignore\") -- in word mode, ls \".gitignore\"."))
-  (flet ((sorted (paths) (sort paths #'string< :key #'namestring)))
-    (let ((pathname (pathname spec)))
-      (cond
-        ((wild-pathname-p pathname)
-         (sorted (directory (shell-glob-pathname pathname) :resolve-symlinks nil)))
-        ;; A plain name that is a file is just itself.
-        ((let ((truename (and (pathname-name pathname) (probe-file pathname))))
-           (and truename (pathname-name truename) (list truename))))
-        ;; ...and one that is a directory lists what is in it.  Without this,
-        ;; (ls "src") with no trailing slash merges to *.* carrying no
-        ;; directory component, and silently lists the current directory.
-        (t (sorted (directory (merge-pathnames "*.*" (as-directory pathname))
-                              :resolve-symlinks nil)))))))
+         :target (when (eq type :symlink) (ignore-errors (sb-posix:readlink native))))))))
 
 (defstage ls (&optional (pattern *default-pathname-defaults*))
   "Emit a FILE-ENTRY per match.  A directory lists its members; a pattern
