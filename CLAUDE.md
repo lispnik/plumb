@@ -7,7 +7,7 @@ carrying Lisp objects, instead of processes and byte streams. SBCL only
 (`sb-thread`, `sb-mop`), no external dependencies, no Quicklisp/ocicl needed.
 
 ```
-sbcl --eval '(asdf:test-system "plumb")'   ; 382 assertions, all passing
+sbcl --eval '(asdf:test-system "plumb")'   ; 334 assertions, all passing
 make                                       ; dump bin/plumb
 sbcl --script demo.lisp
 ```
@@ -62,12 +62,11 @@ sbcl --script demo.lisp
   `file-namestring` re-escapes it and `lstat` then fails -- which silently
   dropped every file whose name contained a metacharacter. Build pathnames
   only at the end, with `parse-native-namestring`.
-- **The glob matcher parses, then matches.** Alternation, closure and negation
-  must be able to give up a choice and retry, which a character walk cannot do.
-  Patterns are parsed once per component, not once per filename.
-- **Extended glob syntax is unconditional**, unlike zsh's `setopt extendedglob`.
-  A file literally named `foo~bar` or `a^b` therefore needs escaping; that was
-  a deliberate choice, not an oversight.
+- **Globbing is POSIX fnmatch plus `**`, and stays that way.** Alternation,
+  extglob, brace expansion, zsh's operators and glob qualifiers were all built
+  (see `c3411ba`) and then removed: each has a pipeline equivalent, and a
+  second query language inside the pattern string is the thing `where` and
+  `sort-by` exist to avoid. The same argument as `ps` having no `--sort`.
 - **Type checking happens before any thread is spawned** (`check-pipeline`).
   `T` on the consuming side means any object *type*, not the absence of one, so
   nothing may follow a stage that produces `nil`. Reading it the other way let

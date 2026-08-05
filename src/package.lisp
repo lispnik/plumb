@@ -25,8 +25,6 @@
    ;; built-in stages
    #:from-list #:counter #:ls #:lines #:sh #:to-sh #:glob #:ps
    #:glob-match #:glob-pattern-p #:read-directory-names #:basename
-   #:expand-braces #:parse-qualifiers #:apply-qualifiers
-   #:*glob-ignore-case* #:*glob-match-dotfiles*
    #:where #:xform #:take #:drop #:uniq #:sort-by #:tally #:accumulate
    #:peek #:to-text #:print-items #:table #:to-file #:from-file #:tee #:route
    ;; external processes
