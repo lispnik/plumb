@@ -2,8 +2,8 @@
 
 Thread-and-channel pipelines that carry Lisp objects instead of bytes.
 The core is SBCL only. Every external library lives in an optional system --
-`plumb/json` (jzon), `plumb/csv` (cl-csv) and `plumb/crypto` (Ironclad) --
-vendored under `ocicl/`,
+`plumb/json` (jzon), `plumb/csv` (cl-csv), `plumb/sql` (cl-dbi) and
+`plumb/crypto` (Ironclad) -- vendored under `ocicl/`,
 pinned by a committed `ocicl.csv` and restored with `ocicl install`. **The
 binary builds with all of them**, so `plumb` on your PATH has everything.
 
@@ -622,6 +622,36 @@ same rule `table` uses, which is why it serialises a `file-entry`, a `process`
 or a type you add later without any of them knowing about CSV. A row missing a
 column gets an empty cell rather than a shifted row.
 
+### from-sql / to-sql
+
+A database is the third source of tabular data, and the only one that filters,
+joins and orders before anything crosses a channel:
+
+```
+$ plumb 'ls "src/*.lisp" | to-sql "files" :database "/tmp/x.db" :create'
+$ plumb 'from-sql "select name,size from files where size > ? order by size desc"
+          :database "/tmp/x.db" :params (list 15000) | to-json'
+```
+
+`cl-dbi` is the portable layer, so this is SQLite, PostgreSQL and MySQL rather
+than one engine — `:driver` defaults to `:sqlite3`, `:database` names the file,
+and `:connect` is any further plist handed to `dbi:connect`, which is where a
+host and password go.
+
+**`from-sql` streams**, unlike `from-json` and `from-csv`. cl-dbi fetches a row
+at a time, so `from-sql "select * from big" | take 5` abandons the query instead
+of reading the table first — the same way `commits | take 5` abandons `git log`.
+
+**`:params` binds the `?` placeholders**, and that is not a convenience:
+interpolating a value is how injection happens, and a value containing a quote
+breaks the query even when nobody is being hostile.
+
+`to-sql` creates nothing by default — a mistyped table name should be an error,
+not a second table that silently accepts the insert. `:create` opts in, typing
+each column from what it actually holds. Columns are the union of `fields`
+across rows, so a row missing one gets NULL rather than a shifted insert, and
+everything goes in one transaction.
+
 ## disks
 
 Block devices as objects — every disk, partition and volume, mounted or not:
@@ -953,8 +983,9 @@ installed.
 make                   # bin/plumb, with plumb/json and plumb/crypto in it
 make test-json         # 60 assertions
 make test-csv          # 35 assertions
+make test-sql          # 29 assertions
 make test-crypto       # 79 assertions
-plumb --version        # plumb 0.1.0 (+crypto +json +csv)
+plumb --version        # plumb 0.1.0 (+crypto +json +csv +sql)
 ```
 
 Ironclad and its dependencies are **vendored** in `ocicl/`, pinned by

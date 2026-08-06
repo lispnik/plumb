@@ -33,7 +33,7 @@
 ;; DIGEST is the same trap as a build silently picking a flavour: it reports
 ;; success and the stage is simply not there.
 (handler-bind ((warning #'muffle-warning))
-  (dolist (system '("plumb/json" "plumb/csv" "plumb/crypto"))
+  (dolist (system '("plumb/json" "plumb/csv" "plumb/sql" "plumb/crypto"))
     (asdf:load-system system)))
 
 ;; Bake the version into the image, so the system definition stays the single

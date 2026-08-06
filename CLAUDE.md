@@ -5,14 +5,15 @@
 `plumb` — an experiment in shell pipelines built from threads and channels
 carrying Lisp objects, instead of processes and byte streams. The **core** is
 SBCL only -- no external libraries -- and every dependency lives in an optional
-system: `plumb/json` (jzon), `plumb/csv` (cl-csv) and `plumb/crypto` (Ironclad).
+system: `plumb/json` (jzon), `plumb/csv` (cl-csv), `plumb/sql` (cl-dbi) and
+`plumb/crypto` (Ironclad).
 The **binary** builds with all of them, so `plumb` on your PATH has everything while
 `asdf:load-system "plumb"` and `make test` need nothing outside SBCL.
 
 ```
 sbcl --eval '(asdf:test-system "plumb")'   ; 491 assertions, core only
 make                                       ; dump bin/plumb, with every system
-make test-json test-csv test-crypto        ; 60, 35 and 79 -- the optional systems
+make test-json test-csv test-sql test-crypto  ; 60, 35, 29, 79 -- optional systems
 sbcl --script demo.lisp
 ocicl install                              ; restore ocicl/ after a fresh clone
 ```
@@ -81,6 +82,20 @@ ocicl install                              ; restore ocicl/ after a fresh clone
   ISO 8601 reader, and `.date` is then a universal time like `ls`'s `.mtime`, so
   one `7d` literal compares against both. Fields are separated by ASCII US,
   which no commit metadata can contain.
+- **`from-sql` streams; `from-json` and `from-csv` cannot.** cl-dbi fetches a
+  row at a time, so `from-sql "..." | take 5` abandons the query the way
+  `commits | take 5` abandons `git log`. JSON and CSV are barriers because a
+  document has to be whole before it parses -- a CSV field may contain a
+  newline. Do not "make them consistent" by buffering SQL.
+- **cl-dbi's row keys are case-PRESERVING** -- `(:|id| 1 :|Name| "alpha")` --
+  and `field` matches keywords with `eq` against an upcased name, so `.name`
+  would miss every column while looking like it worked. They are re-interned by
+  the same rule `json-key` and `csv-key` use. Third time a library's natural
+  shape has not been plumb's, after jzon's hash tables and CSV's all-strings.
+- **`plumb/sql` needs `dbd-sqlite3` named explicitly.** `dbi:connect` finds its
+  driver at runtime through `find-driver`, so depending on `dbi` alone gives a
+  system that loads happily and fails on the first connection. It also brings
+  the project's first *C* dependency, `libsqlite3` through CFFI.
 - **CSV values stay strings unless asked otherwise.** Guessing types is the bug
   every spreadsheet has: `01234` becomes 1234, `1.10` becomes 1.1, a padded id
   loses its padding. `from-csv :numbers` opts in, and even then converts only

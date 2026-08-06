@@ -57,6 +57,29 @@
 ;;; "plumb"` and `make test` need nothing outside SBCL -- but the BINARY builds
 ;;; with all of them, so a `plumb` on your path has everything.
 
+(defsystem "plumb/sql"
+  :description "SQL reading and writing for plumb, on cl-dbi."
+  :author "Matthew"
+  :license "MIT"
+  :version "0.1.0"
+  ;; DBD-SQLITE3 explicitly: DBI:CONNECT finds its driver at runtime through
+  ;; FIND-DRIVER, so depending on DBI alone gives a system that loads happily
+  ;; and then fails on the first connection.
+  :depends-on ("plumb" "dbi" "dbd-sqlite3")
+  :serial t
+  :components ((:module "src" :components ((:file "sql"))))
+  :in-order-to ((test-op (test-op "plumb/sql/tests"))))
+
+(defsystem "plumb/sql/tests"
+  :description "Test suite for the SQL stages."
+  :depends-on ("plumb/sql" "plumb/tests")
+  :serial t
+  :pathname "tests"
+  :components ((:file "sql"))
+  :perform (test-op (o c)
+             (unless (uiop:symbol-call :plumb/tests '#:run-sql-tests)
+               (error "plumb/sql test suite failed."))))
+
 (defsystem "plumb/csv"
   :description "CSV reading and writing for plumb, on cl-csv."
   :author "Matthew"
