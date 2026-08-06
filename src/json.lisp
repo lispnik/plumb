@@ -112,36 +112,58 @@ which is every emoji, decodes to two broken halves."
 
 ;;; ----------------------------------------------------------------- numbers
 
-(defun json-read-number (c)
-  "Integer when it has no fraction or exponent, double otherwise.  An integer
-stays exact -- a 64-bit id turned into a double would silently lose its low
-bits, and ids are exactly what these documents are full of."
-  (let ((start (jc-position c))
-        (floatp nil))
-    (when (eql (jc-peek c) #\-) (jc-next c))
+(defun json-read-digits (c)
+  "One or more digits, consumed.  JSON requires at least one in each of the
+three number parts, which is what makes `1.`, `.1` and `1e` invalid."
+  (let ((start (jc-position c)))
     (loop for ch = (jc-peek c)
           while (and ch (digit-char-p ch))
           do (jc-next c))
+    (when (= start (jc-position c))
+      (jc-fail c "expected a digit"))))
+
+(defun json-read-number (c)
+  "Integer when it has no fraction or exponent, double otherwise.  An integer
+stays exact -- a 64-bit id turned into a double would silently lose its low
+bits, and ids are exactly what these documents are full of.
+
+The grammar is enforced rather than approximated.  Scanning `digits, maybe a
+dot, maybe an exponent` and handing the text to READ-FROM-STRING accepts `01`,
+`1.`, `.1` and `1e`, none of which are JSON -- and accepting them means
+returning a plausible number for input that is actually malformed, which is the
+one thing this parser must not do."
+  (let ((start (jc-position c))
+        (floatp nil))
+    (when (eql (jc-peek c) #\-) (jc-next c))
+    ;; int := 0 | [1-9][0-9]*   -- a leading zero may not be followed by digits
+    (let ((ch (jc-peek c)))
+      (cond ((null ch) (jc-fail c "expected a number"))
+            ((char= ch #\0)
+             (jc-next c)
+             (let ((next (jc-peek c)))
+               (when (and next (digit-char-p next))
+                 (jc-fail c "a number may not have a leading zero"))))
+            ((digit-char-p ch) (json-read-digits c))
+            (t (jc-fail c "expected a number"))))
     (when (eql (jc-peek c) #\.)
       (setf floatp t)
       (jc-next c)
-      (loop for ch = (jc-peek c)
-            while (and ch (digit-char-p ch))
-            do (jc-next c)))
+      (json-read-digits c))
     (when (member (jc-peek c) '(#\e #\E))
       (setf floatp t)
       (jc-next c)
       (when (member (jc-peek c) '(#\+ #\-)) (jc-next c))
-      (loop for ch = (jc-peek c)
-            while (and ch (digit-char-p ch))
-            do (jc-next c)))
+      (json-read-digits c))
     (let ((text (subseq (jc-text c) start (jc-position c))))
-      (when (or (string= text "") (string= text "-"))
-        (jc-fail c "expected a number"))
       (if floatp
-          (let ((*read-default-float-format* 'double-float)
-                (*read-eval* nil))
-            (read-from-string text))
+          ;; An exponent can overflow a double; that is a malformed *document*
+          ;; as far as a caller is concerned, not a floating-point condition to
+          ;; leak out of the parser.
+          (handler-case
+              (let ((*read-default-float-format* 'double-float)
+                    (*read-eval* nil))
+                (read-from-string text))
+            (error () (jc-fail c "number out of range: ~a" text)))
           (parse-integer text)))))
 
 ;;; ------------------------------------------------------------ the grammar
