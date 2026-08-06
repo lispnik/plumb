@@ -1718,6 +1718,42 @@ already been taken."
       (join pipe)
       (check (null (join pipe)) :joining-a-pipeline-twice-is-fine))))
 
+
+;;; ----------------------------------------------------------------- env
+
+(defun test-env ()
+  "The process's own environment, no subprocess and nobody's output to parse."
+  (with-timeout (15 :env)
+    (let ((vars (collect-pipeline (list (env)))))
+      (check (plusp (length vars)) :some-variables-found)
+      (check (every #'env-var-p vars) :all-are-env-vars)
+      ;; PATH is set in any environment this can run in.
+      (let ((path (find "PATH" vars :key #'env-var-name :test #'string=)))
+        (check path :path-is-present)
+        (check (equal (sb-ext:posix-getenv "PATH") (env-var-value path))
+               :value-matches-getenv))
+      ;; The split is on the FIRST equals only: a value may contain more.
+      (let ((weird (find-if (lambda (v) (find #\= (or (env-var-value v) ""))) vars)))
+        (when weird
+          (check (not (find #\= (env-var-name weird))) :name-never-contains-equals))))))
+
+(defun test-a-field-named-value-is-not-the-whole-row ()
+  "TABLE-VALUE reads its scalar column as `the row itself`, and that column used
+to be the keyword :VALUE -- so any object with a real field called VALUE had
+every cell replaced by the object.  ENV-VAR was the first type to have one."
+  (let* ((rows (list (make-env-var :name "A" :value "1")
+                     (make-env-var :name "B" :value "2")))
+         (out (with-output-to-string (s) (render-table rows :stream s)))
+         (lines (split-lines out)))
+    (check (search "value" (first lines)) :the-column-is-still-called-value)
+    (check (search "1" (second lines)) :and-holds-the-field)
+    (check (not (search "A=1" out)) :not-the-whole-object))
+  ;; A fieldless object still renders under one column called `value`.
+  (let* ((out (with-output-to-string (s) (render-table '(1 2) :stream s)))
+         (lines (split-lines out)))
+    (check (string= "value" (string-trim " " (first lines))) :scalars-keep-the-header)
+    (check (string= "1" (string-trim " " (second lines))) :and-print-themselves)))
+
 ;;; --------------------------------------------------------------------- help
 
 (defun stage-named (name) (gethash name plumb::*stages*))
@@ -1888,6 +1924,8 @@ already been taken."
                   test-a-failing-task-releases-its-worker
                   test-pooled-threads-still-carry-the-stage-name
                   test-await-is-idempotent
+                  test-env
+                  test-a-field-named-value-is-not-the-whole-row
                   test-help-registry
                   test-help-listing
                   test-help-detail

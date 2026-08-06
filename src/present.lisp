@@ -53,17 +53,25 @@ line whole.  Recursive, so a stage that presents inside a locked render is fine.
 
 ;;; ------------------------------------------------------------------ tables
 
+(defparameter +scalar-column+ (make-symbol "value")
+  "The single column a fieldless object -- an integer, a string -- renders
+under.  An UNINTERNED symbol rather than :VALUE, because a keyword collides:
+TABLE-VALUE reads this column as `the row itself`, so an object with a real
+field named VALUE had every cell replaced by the object.  ENV-VAR was the first
+type to have one, and the symptom was a value column full of `NAME=value`.
+Printing it still gives the header `value`.")
+
 (defun table-columns (rows)
-  "Field names across ROWS in first-seen order, or (:VALUE) for objects that
-have no fields at all -- integers, say."
+  "Field names across ROWS in first-seen order, or the scalar column for
+objects that have no fields at all -- integers, say."
   (let ((seen '()))
     (dolist (row rows)
       (dolist (key (fields row))
         (pushnew key seen :test #'equal)))
-    (or (nreverse seen) '(:value))))
+    (or (nreverse seen) (list +scalar-column+))))
 
 (defun table-value (row column)
-  (if (eq column :value) row (field row column)))
+  (if (eq column +scalar-column+) row (field row column)))
 
 (defun table-cell (row column max-width)
   "NIL renders empty rather than \"nil\": in a table an absent value should

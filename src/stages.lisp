@@ -149,6 +149,29 @@ a missing size to mean `not a file'."
                 (let ((entry (stat-file-entry path users groups)))
                   (when entry (emit entry)))))))
 
+(defstruct env-var name value)
+
+(defmethod present ((v env-var))
+  (format nil "~a=~a" (env-var-name v) (env-var-value v)))
+
+(defstage env ()
+  "Emit an ENV-VAR per environment variable.  No subprocess and no parsing of
+anybody's output -- SB-EXT:POSIX-ENVIRON is the process's own environment.
+
+  env | where {(search \"PATH\" .name)} | table
+  env | sort-by .name | table
+
+Split on the FIRST equals sign only: a value may contain more of them, and
+`FOO=a=b=c` is one variable whose value is `a=b=c`."
+  (:consumes nil) (:produces :objects)
+  (dolist (entry (sb-ext:posix-environ))
+    (let ((break (position #\= entry)))
+      (emit (if break
+                (make-env-var :name (subseq entry 0 break)
+                              :value (subseq entry (1+ break)))
+                ;; No equals at all is legal in execve's argv, if unusual.
+                (make-env-var :name entry :value nil))))))
+
 (defstruct line text number source)
 
 (defmethod present ((object line)) (line-text object))
