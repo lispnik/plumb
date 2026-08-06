@@ -28,6 +28,7 @@
                (:file "process")
                (:file "blockdev")
                (:file "git")
+               (:file "json")
                (:file "explain")
                (:file "watch")
                (:file "help"))

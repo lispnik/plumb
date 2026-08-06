@@ -8,7 +8,7 @@ carrying Lisp objects, instead of processes and byte streams. SBCL only
 except in `plumb/crypto`, which is optional and separate for that reason.
 
 ```
-sbcl --eval '(asdf:test-system "plumb")'   ; 436 assertions on macOS, 444 on Linux
+sbcl --eval '(asdf:test-system "plumb")'   ; 539 assertions on macOS, 548 on Linux
 make                                       ; dump bin/plumb
 sbcl --script demo.lisp
 make crypto && make test-crypto            ; the optional Ironclad system
@@ -72,6 +72,19 @@ make crypto && make test-crypto            ; the optional Ironclad system
   casual testing -- the Pi would not have caught it. macOS sizes come from the
   exact parenthetical in `diskutil info` (`(500277792768 Bytes)`) and never from
   `diskutil list`, whose figures are rounded to one decimal.
+- **`git` is the one source with no platform fork,** because `git log --format`
+  and `git status --porcelain=v2` are git's own documented contracts rather than
+  a platform's. Use `%at` (a unix timestamp) and not `%aI`: it saves writing an
+  ISO 8601 reader, and `.date` is then a universal time like `ls`'s `.mtime`, so
+  one `7d` literal compares against both. Fields are separated by ASCII US,
+  which no commit metadata can contain.
+- **`from-json` maps `false` and `null` both to NIL, on purpose.** `where
+  {.draft}` has to work and an absent key already reads as NIL through `field`.
+  Integers stay exact rather than becoming doubles -- a 64-bit id would lose its
+  low bits silently. Keys are upcased into keywords because `field` compares
+  names case-insensitively everywhere else. `\uXXXX` is UTF-16, so a leading
+  surrogate must consume its trailing pair or every emoji decodes to two broken
+  halves.
 - **`disks` reads a kernel interface on Linux and a *tool* on macOS.** That
   asymmetry is the feature's main risk and should not be papered over:
   `/sys/block` is stable ABI, `diskutil` is a user command whose output has

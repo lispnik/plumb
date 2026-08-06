@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 436 assertions on macOS, 444 on Linux
+(asdf:test-system "plumb")     ; 539 assertions on macOS, 548 on Linux
 ```
 
 ```
@@ -534,6 +534,53 @@ The data comes from `ps(1)`; what plumb adds is that it arrives as objects. A
 native implementation would mean `/proc` on Linux and `sysctl` plus `libproc`
 on macOS — two lots of platform FFI to obtain what `ps` already prints.
 
+## Sources
+
+Beyond `ls` and `ps`, four more things the system knows, as objects:
+
+```
+$ plumb 'env | where {(search "PATH" .name)} | table'
+$ plumb 'commits | where {(> .date (- (get-universal-time) 7d))} | tally :key .author'
+$ plumb 'changes | where {(eq .status :untracked)} | print-items'
+$ plumb 'handles | where {(eq .state :listen)} | table :columns (list :command :name)'
+```
+
+**`env`** is the process's own environment — no subprocess, nobody's output to
+parse. **`commits`** and **`changes`** are `git log --format` and
+`git status --porcelain=v2`, which are git's *own documented contracts* and so
+identical on every platform: there is no `#+darwin` in `src/git.lisp` and there
+should never be. **`handles`** is `lsof -F`, a field format built for parsing,
+present on both platforms with the same flags — and since a unix descriptor is
+not only a file, it covers sockets and pipes too, which is why there is no
+separate `connections` stage.
+
+### from-json
+
+The one that isn't a source at all, and matters most:
+
+```
+$ plumb 'sh "ip -j addr" | from-json | where {(string= .operstate "UP")} | table'
+$ plumb 'sh "gh pr list --json number,title" | from-json | where {(> .number 100)}'
+$ plumb 'sh "docker ps --format json" | from-json :lines | table'
+```
+
+Every modern CLI already speaks JSON, so one parser turns all of them into
+sources at once rather than a stage per tool. `ip -j addr | from-json` gives
+network interfaces as objects with no new code at all.
+
+Written out rather than pulled in, because the core has no dependencies and a
+JSON reader is a day's work where a dependency is forever. The mapping is chosen
+for a shell: objects become plists with upcased keyword keys so `.name` works
+and `table` can find its columns; `true` is `T`; **`false` and `null` are both
+`nil`**, deliberately, so `where {.draft}` reads the way you expect. Integers
+stay exact — a 64-bit id turned into a double would silently lose its low bits,
+and these documents are mostly ids. A top-level array is spread into its
+elements; `:lines` parses JSON Lines instead and streams.
+
+Malformed input signals with the character position rather than returning
+something plausible: a shell that quietly accepted truncated JSON would give
+wrong answers instead of no answer.
+
 ## disks
 
 Block devices as objects — every disk, partition and volume, mounted or not:
@@ -927,6 +974,8 @@ completion all read that one package.
 | `src/stages.lisp` | `from-list` `counter` `ls` `lines` `where` `xform` `take` `drop` `uniq` `peek` `sort-by` `tally` `accumulate` `to-text` `print-items` `table` |
 | `src/process.lisp` | `sh` / `to-sh` / `ps`: external commands and the process table |
 | `src/blockdev.lisp` | `disks`: /sys/block on Linux, `diskutil` on macOS |
+| `src/git.lisp` | `commits` / `changes`: git's own stable formats |
+| `src/json.lisp` | `from-json`: a JSON reader, so every --json tool is a source |
 | `src/crypto.lisp` | `digest` / `digests`, on Ironclad -- the `plumb/crypto` system |
 | `src/help.lisp` | `help`: the stage registry, listing and detail rendering |
 | `src/explain.lisp` | `explain`: pipeline metadata, drawn without running |
