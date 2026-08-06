@@ -19,11 +19,38 @@
 
 (in-package #:plumb)
 
+(defun skip-lisp-noise (text start)
+  "Index of the first character that is neither whitespace nor a comment."
+  (let ((i start) (n (length text)))
+    (loop
+      (cond ((>= i n) (return i))
+            ((member (char text i) '(#\Space #\Tab #\Newline #\Return)) (incf i))
+            ;; A line comment: no word-mode pipeline can begin with one, since
+            ;; a bare word is a string and no stage is named `;`.
+            ((char= (char text i) #\;)
+             (setf i (or (position #\Newline text :start i) n)))
+            ;; #| |# only.  NOT every #, because #'f and #(1 2) are ordinary
+            ;; word-mode tokens and must keep reaching the word reader.
+            ((and (char= (char text i) #\#)
+                  (< (1+ i) n)
+                  (char= (char text (1+ i)) #\|))
+             (let ((end (search "|#" text :start2 (+ i 2))))
+               (setf i (if end (+ end 2) n))))
+            (t (return i))))))
+
 (defun shell-syntax-p (text)
-  "Does TEXT want the word reader?  A leading ( means it is Lisp already."
-  (let ((trimmed (string-left-trim '(#\Space #\Tab #\Newline) text)))
-    (and (plusp (length trimmed))
-         (char/= (char trimmed 0) #\())))
+  "Does TEXT want the word reader?  A leading ( means it is Lisp already.
+
+Comments are skipped before deciding.  Every Lisp file opens with a ;;;; banner,
+and sniffing the raw first character sent those to the word reader -- so
+`plumb -f stages.lisp` failed with an end-of-file inside a string rather than
+loading the file, which is the one thing -f exists to do.
+
+Only the MODE decision happens here; the word-mode evaluator skips comment
+lines of its own, so a word-mode script can carry comments too."
+  (let ((i (skip-lisp-noise text 0)))
+    (and (< i (length text))
+         (char/= (char text i) #\())))
 
 ;;; ---------------------------------------------------------------- scanning
 

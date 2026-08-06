@@ -161,10 +161,15 @@ the one that matters -- prints nothing, rather than a stray NIL."
   "Evaluate TEXT as either Lisp forms or word-mode pipelines.  A leading paren
 decides, per PLUMB:SHELL-SYNTAX-P -- see CLAUDE.md open work 5."
   (if (plumb:shell-syntax-p text)
-      ;; One pipeline per line: word mode has no line continuation.
+      ;; One pipeline per line: word mode has no line continuation.  Blank
+      ;; lines and ; comments are skipped, so a word-mode script can be
+      ;; commented like any other -- SHELL-SYNTAX-P already looks past them to
+      ;; decide the mode, and it would be strange for the mode check to
+      ;; tolerate a comment the evaluator then choked on.
       (dolist (line (plumb::split-lines text))
-        (unless (string= "" (string-trim '(#\Space #\Tab) line))
-          (eval-and-present (plumb:read-shell line) quiet)))
+        (let ((trimmed (string-trim '(#\Space #\Tab #\Return) line)))
+          (unless (or (string= "" trimmed) (char= (char trimmed 0) #\;))
+            (eval-and-present (plumb:read-shell trimmed) quiet))))
       (with-input-from-string (in text)
         (loop for form = (read in nil *eof*)
               until (eq form *eof*)

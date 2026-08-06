@@ -670,6 +670,27 @@ symbol) and a keyword is a symbol."
   ;; A word that names no stage keeps the rule it always had.
   (check (= 0 (plumb::required-argument-count 'no-such-stage)) :unknown-word-is-zero))
 
+(defun test-a-leading-comment-is-still-lisp ()
+  "SHELL-SYNTAX-P trimmed whitespace only, so a file opening with a ;;;; banner
+-- which every Lisp file does -- was handed to the WORD reader.  `plumb -f
+stages.lisp` then died with an end-of-file inside a string instead of loading
+the file, which is the one thing -f exists for."
+  (check (not (shell-syntax-p (format nil ";; a comment~%(foo)"))) :line-comment-then-lisp)
+  (check (not (shell-syntax-p (format nil ";;;; banner~%;;;;~%(defstage x ())")))
+         :several-comment-lines)
+  (check (not (shell-syntax-p "#|block|# (foo)")) :block-comment)
+  (check (not (shell-syntax-p ";; nothing but a comment")) :comment-only-is-not-word-mode)
+  ;; And none of that may capture ordinary word mode.
+  (check (shell-syntax-p "ls | take 5") :a-pipeline-is-still-word-mode)
+  (check (shell-syntax-p "  ls src/") :leading-space-is-still-word-mode)
+  ;; # is NOT always a comment: #'f and #(1 2) are word-mode tokens.
+  (check (shell-syntax-p "#'oddp") :sharp-quote-stays-word-mode)
+  (check (shell-syntax-p "#(1 2 3)") :sharp-vector-stays-word-mode)
+  ;; A comment above a WORD-mode pipeline leaves it word mode: the comment is
+  ;; skipped, then the ordinary leading-paren rule applies to what follows.
+  (check (shell-syntax-p (format nil ";; comment~%ls src/"))
+         :a-comment-above-a-pipeline-is-still-word-mode))
+
 (defun test-reader-variables-and-globs ()
   (check (equal '(take *default-capacity*) (read-shell "take *default-capacity*"))
          :earmuffed-argument-is-a-variable)
@@ -2047,6 +2068,7 @@ having no terminator but EOF.")
                   test-reader-dispatch
                   test-reader-pipeline
                   test-reader-blocks
+                  test-a-leading-comment-is-still-lisp
                   test-a-keyword-in-a-required-position-is-a-value
                   test-reader-variables-and-globs
                   test-reader-suffix-literals
