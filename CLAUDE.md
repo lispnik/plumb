@@ -5,14 +5,14 @@
 `plumb` — an experiment in shell pipelines built from threads and channels
 carrying Lisp objects, instead of processes and byte streams. The **core** is
 SBCL only -- no external libraries -- and every dependency lives in an optional
-system: `plumb/json` (jzon) and `plumb/crypto` (Ironclad). The **binary** builds
-with all of them, so `plumb` on your PATH has everything while
+system: `plumb/json` (jzon), `plumb/csv` (cl-csv) and `plumb/crypto` (Ironclad).
+The **binary** builds with all of them, so `plumb` on your PATH has everything while
 `asdf:load-system "plumb"` and `make test` need nothing outside SBCL.
 
 ```
 sbcl --eval '(asdf:test-system "plumb")'   ; 491 assertions, core only
 make                                       ; dump bin/plumb, with every system
-make test-json && make test-crypto         ; 60 and 79, the optional systems
+make test-json test-csv test-crypto        ; 60, 35 and 79 -- the optional systems
 sbcl --script demo.lisp
 ocicl install                              ; restore ocicl/ after a fresh clone
 ```
@@ -81,6 +81,13 @@ ocicl install                              ; restore ocicl/ after a fresh clone
   ISO 8601 reader, and `.date` is then a universal time like `ls`'s `.mtime`, so
   one `7d` literal compares against both. Fields are separated by ASCII US,
   which no commit metadata can contain.
+- **CSV values stay strings unless asked otherwise.** Guessing types is the bug
+  every spreadsheet has: `01234` becomes 1234, `1.10` becomes 1.1, a padded id
+  loses its padding. `from-csv :numbers` opts in, and even then converts only
+  when the text *round-trips* through the printer, so padded and trailing-zero
+  values survive. Note also that a word-mode `nil` is the string `"nil"`, which
+  is true -- `to-csv :headers ()` is how you turn a flag off there, and that is
+  the price of every bare word being a string, which is what keeps globs working.
 - **`from-json` maps `false` and `null` both to NIL, on purpose.** `where
   {.draft}` has to work and an absent key already reads as NIL through `field`.
   Integers stay exact rather than becoming doubles -- a 64-bit id would lose its
@@ -179,6 +186,13 @@ ocicl install                              ; restore ocicl/ after a fresh clone
   the user's own `(:tree "~/Projects/common-lisp/")` -- it built here and would
   have built nowhere else. The vendored tree is listed before
   `:inherit-configuration` so it wins.
+- **The vendored tree must be COMPLETE, not merely present.** Twice a build has
+  worked here and nowhere else because ASDF quietly satisfied a missing
+  transitive dependency out of a *neighbouring project* under the user's own
+  `(:tree "~/Projects/common-lisp/")` -- Ironclad the first time, `cl-ppcre`
+  (under cl-csv, via cl-unicode) the second, and both were caught only by
+  running on the Pi. `make check-vendored` loads every optional system with the
+  inherited registry switched off, which is the cheap way to catch it here.
 - **Dependencies are vendored, never resolved at build time.** `ocicl.csv` is
   committed and `ocicl/` is not, so `ocicl install` restores an exact tree and
   the build itself needs no network. Before this, `make crypto` resolved
@@ -186,7 +200,7 @@ ocicl install                              ; restore ocicl/ after a fresh clone
   `(:tree "~/Projects/common-lisp/")` -- it built here and would have built
   nowhere else.
 - **Every external library is an optional system; the binary takes them all.**
-  `plumb/json` and `plumb/crypto` each hold one library, one source file and one
+  `plumb/json`, `plumb/csv` and `plumb/crypto` each hold one library, one source file and one
   test system. That keeps the core loadable and testable with nothing but SBCL,
   *and* keeps `from-json` always present where it matters -- because its value
   is that every `--json` tool becomes a source, which an opt-in binary would

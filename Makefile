@@ -15,14 +15,18 @@ SOURCES := plumb.asd build.lisp $(wildcard src/*.lisp)
 
 # Single quotes cannot appear inside the --eval arguments below, hence (quote ...).
 #
-# ocicl/ is jzon, Ironclad and their dependencies, vendored here and pinned by
-# ocicl.csv.  It is listed BEFORE :inherit-configuration so it wins: `make
-# crypto` once resolved Ironclad out of whatever neighbouring project the user's
-# own source-registry happened to point at, which is not a build.
+# ocicl/ is jzon, cl-csv, Ironclad and their dependencies, vendored here and
+# pinned by ocicl.csv.  Listed BEFORE :inherit-configuration so it wins.
+#
+# That ordering is not enough on its own: the tree must also be COMPLETE.  Twice
+# now a build has worked here and nowhere else, because ASDF quietly satisfied a
+# missing transitive dependency out of a neighbouring project under the user's
+# own (:tree "~/Projects/common-lisp/") -- Ironclad the first time, cl-ppcre the
+# second.  `make check-vendored` proves the tree stands alone.
 REGISTRY := (asdf:initialize-source-registry (quote (:source-registry (:directory "$(ROOT)") (:tree "$(ROOT)ocicl/") :inherit-configuration)))
 LISP     := $(SBCL) --noinform --non-interactive --no-userinit --eval "(require :asdf)" --eval '$(REGISTRY)'
 
-.PHONY: all build test test-crypto test-json demo repl clean help deps
+.PHONY: all build test test-crypto test-json test-csv check-vendored demo repl clean help deps
 
 # The optional systems need the vendored tree.  ocicl.csv is committed and
 # ocicl/ is not, so a fresh clone has to restore it -- and should be told so
@@ -62,6 +66,18 @@ test-crypto: | deps
 test-json: | deps
 	@$(LISP) --eval '(asdf:test-system "plumb/json")'
 
+test-csv: | deps
+	@$(LISP) --eval '(asdf:test-system "plumb/csv")'
+
+# Loads every optional system with the user's own registry switched OFF, so a
+# dependency that is only satisfied by some other checkout on this machine
+# fails here rather than on someone else's.
+check-vendored: | deps
+	@$(SBCL) --noinform --non-interactive --no-userinit --eval "(require :asdf)" \
+	  --eval '(asdf:initialize-source-registry (quote (:source-registry (:directory "$(ROOT)") (:tree "$(ROOT)ocicl/") :ignore-inherited-configuration)))' \
+	  --eval '(handler-bind ((warning (function muffle-warning))) (dolist (s (list "plumb/json" "plumb/csv" "plumb/crypto")) (asdf:load-system s)))' \
+	  --eval '(format t "~&vendored tree is self-contained~%")'
+
 # The last section runs bin/plumb as a subprocess, so there has to be one.
 demo:
 	@test -x $(BIN) || $(MAKE) build
@@ -81,6 +97,8 @@ help:
 	@echo "make test    run the test suite"
 	@echo "make test-crypto  run the digest tests"
 	@echo "make test-json    run the JSON tests"
+	@echo "make test-csv     run the CSV tests"
+	@echo "make check-vendored  prove ocicl/ stands alone, with no inherited registry"
 	@echo "make demo    sbcl --script demo.lisp"
 	@echo "make repl    interactive plumb prompt, no binary needed"
 	@echo "make clean   remove bin/"

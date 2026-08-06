@@ -2,7 +2,8 @@
 
 Thread-and-channel pipelines that carry Lisp objects instead of bytes.
 The core is SBCL only. Every external library lives in an optional system --
-`plumb/json` (jzon) and `plumb/crypto` (Ironclad) -- vendored under `ocicl/`,
+`plumb/json` (jzon), `plumb/csv` (cl-csv) and `plumb/crypto` (Ironclad) --
+vendored under `ocicl/`,
 pinned by a committed `ocicl.csv` and restored with `ocicl install`. **The
 binary builds with all of them**, so `plumb` on your PATH has everything.
 
@@ -596,6 +597,31 @@ Malformed input signals with the character position rather than returning
 something plausible: a shell that quietly accepted truncated JSON would give
 wrong answers instead of no answer.
 
+### from-csv / to-csv
+
+The same shape for the format spreadsheets and data exports speak:
+
+```
+$ plumb 'from-file "export.csv" | from-csv | where {(string= .status "open")} | table'
+$ plumb 'ls "src/*.lisp" | to-csv > files.csv'
+$ plumb 'from-file "raw.tsv" | from-csv :separator #\Tab | to-json'
+```
+
+`cl-csv` does the lexing, and that is worth a dependency for one reason: CSV
+looks like split-on-comma and is not. A field may contain the separator, a
+doubled quote, or a **newline** — so a line-at-a-time reader is wrong on real
+exports. All three are in the tests.
+
+Values stay **strings** unless you ask otherwise. Guessing types is the bug
+every spreadsheet has: `01234` becomes 1234, `1.10` becomes 1.1, a padded id
+loses its padding. `:numbers` opts in, and even then a field converts only when
+its text round-trips, so `01234` and `1.10` still survive as written.
+
+`to-csv` takes the union of `fields` across every row in first-seen order — the
+same rule `table` uses, which is why it serialises a `file-entry`, a `process`
+or a type you add later without any of them knowing about CSV. A row missing a
+column gets an empty cell rather than a shifted row.
+
 ## disks
 
 Block devices as objects — every disk, partition and volume, mounted or not:
@@ -925,9 +951,10 @@ installed.
 
 ```
 make                   # bin/plumb, with plumb/json and plumb/crypto in it
-make test-crypto       # 79 assertions
 make test-json         # 60 assertions
-plumb --version        # plumb 0.1.0 (+crypto +json)
+make test-csv          # 35 assertions
+make test-crypto       # 79 assertions
+plumb --version        # plumb 0.1.0 (+crypto +json +csv)
 ```
 
 Ironclad and its dependencies are **vendored** in `ocicl/`, pinned by

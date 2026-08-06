@@ -57,6 +57,26 @@
 ;;; "plumb"` and `make test` need nothing outside SBCL -- but the BINARY builds
 ;;; with all of them, so a `plumb` on your path has everything.
 
+(defsystem "plumb/csv"
+  :description "CSV reading and writing for plumb, on cl-csv."
+  :author "Matthew"
+  :license "MIT"
+  :version "0.1.0"
+  :depends-on ("plumb" "cl-csv")
+  :serial t
+  :components ((:module "src" :components ((:file "csv"))))
+  :in-order-to ((test-op (test-op "plumb/csv/tests"))))
+
+(defsystem "plumb/csv/tests"
+  :description "Test suite for the CSV stages."
+  :depends-on ("plumb/csv" "plumb/tests")
+  :serial t
+  :pathname "tests"
+  :components ((:file "csv"))
+  :perform (test-op (o c)
+             (unless (uiop:symbol-call :plumb/tests '#:run-csv-tests)
+               (error "plumb/csv test suite failed."))))
+
 (defsystem "plumb/json"
   :description "JSON reading and writing for plumb, on com.inuoe.jzon."
   :author "Matthew"
