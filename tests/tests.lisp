@@ -1844,6 +1844,72 @@ that into COMMAND-FAILED, which rides the :ERR port like any other stage error."
       (check (search "git" (string-downcase (princ-to-string condition)))
              :and-the-message-names-git))))
 
+
+;;; --------------------------------------------------------------- handles
+
+(defparameter +lsof-sample+
+  (format nil "~{~a~%~}"
+          '("p100" "cbash" "u501"
+            "fcwd" "tDIR" "n/tmp"
+            "f3" "tIPv4" "PTCP" "n*:8080" "TST=LISTEN" "TQR=0"
+            "p200" "cother"
+            "f4" "tREG" "s99" "i7" "n/etc/hosts"))
+  "lsof -F is a STREAM of tagged lines, not a table: `p` opens a process, `f`
+opens a file inside it, everything else sets a field on whichever is open.  The
+three things that can go wrong are all here -- process context carrying to a
+second file record, a new `p` flushing the one before it, and the last record
+having no terminator but EOF.")
+
+(defun parse-lsof-sample ()
+  (let ((out '()))
+    (with-input-from-string (in +lsof-sample+)
+      (plumb::map-lsof-handles in (lambda (h) (push h out)) (make-hash-table)))
+    (nreverse out)))
+
+(defun test-lsof-field-format-state-machine ()
+  (let ((hs (parse-lsof-sample)))
+    (check (= 3 (length hs)) :three-records-including-the-last)
+    (destructuring-bind (cwd sock other) hs
+      ;; Process fields carry from the `p`/`c`/`u` lines onto each file.
+      (check (eql 100 (handle-pid cwd)) :pid-from-the-process-record)
+      (check (string= "bash" (handle-command cwd)) :command-carries)
+      (check (eql 501 (handle-uid cwd)) :uid-carries)
+      (check (string= "cwd" (handle-fd cwd)) :fd-is-a-string-not-a-number)
+      (check (eq :dir (handle-type cwd)) :type-is-a-keyword)
+      ;; The second file of the SAME process keeps its context.
+      (check (eql 100 (handle-pid sock)) :context-carries-to-the-next-file)
+      (check (eq :ipv4 (handle-type sock)) :socket-type)
+      (check (eq :tcp (handle-protocol sock)) :protocol)
+      ;; T carries several key=value pairs; only ST is the state.
+      (check (eq :listen (handle-state sock)) :tcp-state-from-st)
+      ;; A new `p` starts a new process and flushes what came before.
+      (check (eql 200 (handle-pid other)) :new-process-record)
+      (check (string= "other" (handle-command other)) :new-command)
+      (check (null (handle-uid other)) :uid-resets-with-the-process)
+      (check (eql 99 (handle-size other)) :size-is-a-number)
+      (check (eql 7 (handle-inode other)) :inode-is-a-number)
+      (check (string= "/etc/hosts" (handle-name other)) :name))))
+
+(defun test-handles-on-our-own-process ()
+  "Against a process whose open files we can verify independently."
+  (with-timeout (60 :handles)
+    (let ((mine (collect-pipeline (list (handles :pid (sb-posix:getpid))))))
+      (check (plusp (length mine)) :some-handles-found)
+      (check (every #'handle-p mine) :all-are-handles)
+      ;; Nothing may lose its process context -- the state machine's one job.
+      (check (every (lambda (h) (and (handle-pid h) (handle-command h) (handle-fd h)))
+                    mine)
+             :every-handle-knows-its-process)
+      (check (every (lambda (h) (eql (sb-posix:getpid) (handle-pid h))) mine)
+             :pid-selection-was-honoured)
+      ;; lsof's cwd for this process is the one we are actually in.
+      (let ((cwd (find "cwd" mine :key #'handle-fd :test #'string=)))
+        (check cwd :cwd-is-listed)
+        (when cwd
+          (check (string= (string-right-trim "/" (sb-posix:getcwd))
+                          (string-right-trim "/" (handle-name cwd)))
+                 :cwd-matches-getcwd))))))
+
 ;;; --------------------------------------------------------------------- help
 
 (defun stage-named (name) (gethash name plumb::*stages*))
@@ -2020,6 +2086,8 @@ that into COMMAND-FAILED, which rides the :ERR port like any other stage error."
                   test-commits-can-be-bounded-by-take
                   test-changes
                   test-git-outside-a-repository-is-a-clear-error
+                  test-lsof-field-format-state-machine
+                  test-handles-on-our-own-process
                   test-help-registry
                   test-help-listing
                   test-help-detail

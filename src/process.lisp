@@ -221,3 +221,99 @@ source produced the object would undo the reason for having objects."
             while line
             do (let ((process (parse-ps-line line)))
                  (when process (emit process)))))))
+
+;;; ---------------------------------------------------------------- handles
+;;;
+;;; lsof -F is a field format built for parsing -- that is what -F is for -- and
+;;; it exists on both platforms with the same flags and the same shape.  The
+;;; output is a STREAM of tagged lines rather than a table: `p` opens a process
+;;; record, `f` opens a file record inside it, and everything else sets a field
+;;; on whichever is currently open.  So this is a small state machine, and the
+;;; last record has to be flushed at EOF.
+;;;
+;;; -n and -P turn off DNS and port-name lookup, which keeps it fast and stops
+;;; the output depending on the network; -w drops warnings about processes we
+;;; cannot examine.
+
+(defstruct handle
+  pid command uid user
+  fd                                    ; "cwd", "txt", "3" -- a string, not a
+                                        ; number, because most of them are not
+  type protocol state
+  size inode name)
+
+(defmethod present ((h handle))
+  (format nil "~6@a  ~12a ~a" (handle-pid h) (handle-command h)
+          (or (handle-name h) (handle-type h) (handle-fd h))))
+
+(defun map-lsof-handles (stream function users)
+  (let ((pid nil) (command nil) (uid nil) (file nil))
+    (flet ((flush ()
+             (when file (funcall function file) (setf file nil))))
+      (loop for line = (read-line stream nil nil)
+            while line
+            do (when (plusp (length line))
+                 (let ((tag (char line 0))
+                       (value (subseq line 1)))
+                   (case tag
+                     ;; A new process ends whatever file record was open.
+                     (#\p (flush)
+                          (setf pid (parse-integer value :junk-allowed t)
+                                command nil uid nil))
+                     (#\c (setf command value))
+                     (#\u (setf uid (parse-integer value :junk-allowed t)))
+                     (#\f (flush)
+                          (setf file (make-handle
+                                      :pid pid :command command :uid uid
+                                      :user (when uid
+                                              (name-for-id uid users
+                                                           #'sb-posix:getpwuid
+                                                           #'sb-posix:passwd-name))
+                                      :fd value)))
+                     (#\t (when file
+                            (setf (handle-type file)
+                                  (intern (string-upcase value) :keyword))))
+                     (#\s (when file
+                            (setf (handle-size file) (parse-integer value :junk-allowed t))))
+                     (#\i (when file
+                            (setf (handle-inode file) (parse-integer value :junk-allowed t))))
+                     (#\n (when file (setf (handle-name file) value)))
+                     (#\P (when file
+                            (setf (handle-protocol file)
+                                  (intern (string-upcase value) :keyword))))
+                     ;; T carries several key=value pairs; ST is the TCP state.
+                     (#\T (when (and file (eql 0 (search "ST=" value)))
+                            (setf (handle-state file)
+                                  (intern (subseq value 3) :keyword))))))))
+      (flush))))
+
+(defstage handles (&key pid network)
+  "Emit a HANDLE per open file -- every descriptor every process holds, which
+on unix means sockets and devices too, not just files.
+
+  handles | where {(eq .type :ipv4)} | table :columns (list :command :name :state)
+  handles | where {(eq .state :listen)} | sort-by .command | table
+  handles | tally :key .command | sort-by .count :desc | take 10
+  handles :pid (sb-posix:getpid) | table
+
+.FD is a STRING, because most of them are not numbers: cwd, txt, rtd and mem
+are descriptors in lsof's sense.  .TYPE and .PROTOCOL are lsof's own vocabulary
+upcased into keywords -- :REG :DIR :IPV4 :IPV6 :UNIX :FIFO :CHR -- rather than
+a set invented here.
+
+:PID and :NETWORK exist for the reason COMMITS takes a :PATH -- lsof does that
+selection far more cheaply than a filter can, an order of magnitude for
+:NETWORK -- and everything else is WHERE.
+
+lsof exits non-zero when there are processes it may not examine, which for an
+unprivileged user is most of them, so the status is ignored: a partial answer is
+the normal answer here."
+  (:consumes nil) (:produces :objects)
+  (let ((users (make-hash-table)))
+    (with-command (proc (append (list "lsof" "-F" "pcuftsinPT" "-n" "-P" "-w")
+                                (when network (list "-i"))
+                                (when pid (list "-p" (princ-to-string pid))))
+                   '(:output :stream) :stderr :capture :on-exit :ignore)
+      (map-lsof-handles (sb-ext:process-output proc)
+                        (lambda (handle) (emit handle))
+                        users))))
