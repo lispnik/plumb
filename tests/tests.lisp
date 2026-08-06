@@ -522,7 +522,9 @@ nanosecond fields nothing else can check."
              :atime-agrees))))
 
 (defun test-sub-second-timestamps ()
-  "What SB-POSIX cannot reach: nanoseconds, st_blocks, and Darwin's birthtime."
+  "What SB-POSIX cannot reach: nanoseconds, st_blocks, and a birth time --
+Darwin's st_birthtime, and on Linux STATX_BTIME, which struct stat has no field
+for at all."
   (with-timeout (20 :nanoseconds)
     (let ((entry (first (collect-pipeline (list (ls "src/ansi.lisp"))))))
       (dolist (nsec (list (file-entry-mtime-nsec entry)
@@ -534,8 +536,29 @@ nanosecond fields nothing else can check."
       (check (integerp (file-entry-mtime entry)) :mtime-is-still-whole-seconds)
       (check (plusp (file-entry-blocks entry)) :blocks-allocated)
       (check (plusp (file-entry-blksize entry)) :block-size)
-      ;; A file cannot have been created after it was last written.
-      (check (<= (file-entry-birthtime entry) (file-entry-mtime entry)) :birthtime))
+      ;; Birth time is a real timestamp.  NOT birthtime <= mtime, which this
+      ;; asserted and which is simply false for a *copied* file: cp -p and
+      ;; rsync -a create a new file now and put the old mtime back on it, so
+      ;; the birth time is legitimately later.  A checkout is a copy.
+      (check (integerp (file-entry-birthtime entry)) :birthtime-is-a-timestamp)
+      (check (< (encode-universal-time 0 0 0 1 1 1990 0)
+                (file-entry-birthtime entry)
+                (+ (get-universal-time) 86400))
+             :birthtime-is-plausible))
+    ;; The ordering does hold for a file created in place, which is the only
+    ;; case where "created before last written" is guaranteed -- so test it
+    ;; there rather than on whatever the working tree happens to contain.
+    (let ((path "/tmp/plumb-birthtime-test"))
+      (unwind-protect
+           (with-timeout (10 :birthtime-ordering)
+             (with-open-file (out path :direction :output :if-exists :supersede)
+               (write-line "hello" out))
+             (let ((fresh (first (collect-pipeline (list (ls path))))))
+               (check (<= (file-entry-birthtime fresh) (file-entry-mtime fresh))
+                      :created-no-later-than-last-written)
+               (check (<= (abs (- (file-entry-birthtime fresh) (get-universal-time))) 60)
+                      :and-it-was-just-now)))
+        (ignore-errors (delete-file path))))
     ;; PRECISE-TIME is an exact rational: a double cannot hold a universal time
     ;; to nanosecond resolution, so 1e-9 differences would vanish in a float.
     (check (rationalp (precise-time 3994773576 329129261)) :precise-time-is-exact)

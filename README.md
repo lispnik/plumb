@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 433 assertions on macOS, 434 on Linux
+(asdf:test-system "plumb")     ; 436 assertions on macOS, 444 on Linux
 ```
 
 ```
@@ -915,7 +915,7 @@ completion all read that one package.
 | | |
 |---|---|
 | `src/ansi.lisp` | terminal colour, shared by the prompt and `help` |
-| `src/stat.lisp` | one `lstat` through `sb-alien`: nanoseconds, blocks, birthtime |
+| `src/stat.lisp` | one `lstat`/`statx` through `sb-alien`: nanoseconds, blocks, birthtime |
 | `src/glob.lisp` | POSIX globbing over `readdir`, not CL pathname patterns |
 | `src/channel.lisp` | bounded FIFO, backpressure, two-sided close |
 | `src/field.lisp` | uniform field access, `$` block macro |

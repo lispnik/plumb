@@ -8,7 +8,7 @@ carrying Lisp objects, instead of processes and byte streams. SBCL only
 except in `plumb/crypto`, which is optional and separate for that reason.
 
 ```
-sbcl --eval '(asdf:test-system "plumb")'   ; 433 assertions, all passing
+sbcl --eval '(asdf:test-system "plumb")'   ; 436 assertions on macOS, 444 on Linux
 make                                       ; dump bin/plumb
 sbcl --script demo.lisp
 make crypto && make test-crypto            ; the optional Ironclad system
@@ -87,6 +87,16 @@ make crypto && make test-crypto            ; the optional Ironclad system
   read permission and blocks forever on a FIFO; `ls` used to hang on a
   directory containing one. `lstat` also describes a symlink rather than
   following it, which is right because `glob` does not resolve them.
+- **Linux uses `statx`, not `struct stat`.** `struct stat` is laid out
+  *differently per architecture* on Linux -- aarch64 is 128 bytes with `st_mode`
+  before `st_nlink`, x86-64 is 144 with them swapped -- so hand-writing it means
+  one declaration per arch, each needing its own machine to verify. `struct
+  statx` is kernel UAPI with one fixed layout everywhere, and it answers
+  something `struct stat` cannot: Linux has no `st_birthtime` field at all, but
+  `STATX_BTIME` exists and ext4 keeps it. Offsets were confirmed with
+  `offsetof(3)` on the target. Note the mask: the kernel says *per file* whether
+  a birth time exists, and a filesystem without one must report NIL rather
+  than 1970.
 - **A hand-written alien struct layout must be cross-checked.** `src/stat.lisp`
   declares Darwin's `struct stat` to reach nanoseconds, `st_blocks` and
   `st_birthtime`. Every field `sb-posix` also knows is asserted equal to it in
@@ -296,6 +306,10 @@ make crypto && make test-crypto            ; the optional Ironclad system
 - New stages go in `src/stages.lisp`, new exports in `src/package.lisp`.
   `src/crypto.lisp` is the exception on both counts: it exports at load time,
   since its symbols name nothing on a build without Ironclad.
+- `birthtime <= mtime` is **not** an invariant. `cp -p` and `rsync -a` create a
+  file now and put the old mtime back, so a copied file -- including anything
+  rsync'd to a test box -- legitimately has a birth time *later* than its
+  mtime. Test the ordering on a file created in place, where it does hold.
 - Don't assert the ambient environment in a test either. The `ls` fixture used
   `chmod +x` and asserted `-rwxr-xr-x`, which is true under umask 022 and false
   under Debian's 002; `chmod 755` states what it means.
