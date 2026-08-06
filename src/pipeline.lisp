@@ -5,7 +5,7 @@
 
 (defstruct (pipeline (:copier nil))
   (stages '())
-  (threads '())
+  (tasks '())
   (channels '())
   (branches '())                        ; sub-pipelines fed by named ports
   (sink nil)
@@ -63,7 +63,15 @@ clear error instead of a deadlock or a type error 400 items in."
       (push (cons (stage-name stage) condition) (pipeline-failures pipeline)))))
 
 (defun spawn-stage (stage in outs &key pipeline (worker 0))
-  (sb-thread:make-thread
+  ;; Leased from the pool rather than created: MAKE-THREAD is ~28us and a lease
+  ;; ~2.6us, which is most of a short pipeline's setup cost.  Nothing else about
+  ;; this function changes -- the specials, the handler-case and the
+  ;; unwind-protect that closes the ports are the same code on the same
+  ;; one-thread-per-stage model.
+  (spawn
+   (if (plusp worker)
+       (format nil "plumb:~a/~d" (stage-name stage) worker)
+       (format nil "plumb:~a" (stage-name stage)))
    (lambda ()
      (let ((*input* in)
            (*outputs* outs)
@@ -87,10 +95,7 @@ clear error instead of a deadlock or a type error 400 items in."
                     (close-output ch)))
          ;; Refcounted on both sides now, so with several workers the last one
          ;; out does the closing and the others just retire.
-         (when in (close-input in)))))
-   :name (if (plusp worker)
-             (format nil "plumb:~a/~d" (stage-name stage) worker)
-             (format nil "plumb:~a" (stage-name stage)))))
+         (when in (close-input in)))))))
 
 (defun extra-ports (stage)
   "The output ports beyond :OUT and :ERR that STAGE declared."
@@ -179,7 +184,7 @@ a stage declared with (:ports ...).  See WIRE-BRANCHES."
     ;; between two pipelines needs the caller to account for both.
     (setf (channel-producers err) (reduce #'+ workers))
     (let ((wiring (wire-branches stages ports capacity pipe check)))
-      (setf (pipeline-threads pipe)
+      (setf (pipeline-tasks pipe)
             (loop for s in stages
                   for i from 0
                   append (let ((in (if (zerop i) input (nth (1- i) chans)))
@@ -204,8 +209,7 @@ a stage declared with (:ports ...).  See WIRE-BRANCHES."
   "Wait for every stage to finish, branches included.  With ERRORP, resignal
 the first failure -- a branch's failures count as the pipeline's, since from
 outside there is one pipeline."
-  (mapc (lambda (th) (ignore-errors (sb-thread:join-thread th :default nil)))
-        (pipeline-threads pipeline))
+  (mapc (lambda (task) (ignore-errors (await task))) (pipeline-tasks pipeline))
   (let ((failures (append (reverse (pipeline-failures pipeline))
                           (loop for branch in (pipeline-branches pipeline)
                                 append (ignore-errors (join branch))))))

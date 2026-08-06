@@ -5,7 +5,7 @@ SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 420 assertions on macOS, 421 on Linux
+(asdf:test-system "plumb")     ; 433 assertions on macOS, 434 on Linux
 ```
 
 ```
@@ -407,6 +407,33 @@ down before anything else writes: `with-output-lock` is already the one place
 every shared-stream write funnels through, so a single hook there is the whole
 mechanism. When stderr is not a terminal there is no cursor motion at all —
 just one static block of totals at the end.
+
+## Pooled stage threads
+
+A stage still gets a thread of its own, but it is **leased, not created**.
+`sb-thread:make-thread` costs ~28 µs here and handing work to a parked worker
+~2.6 µs, so a four-stage pipeline used to spend about half its 214 µs of setup
+just making threads — which is what made a pipeline-per-file loop expensive.
+
+```
+500 four-stage pipelines   0.107s  ->  0.02s
+1M objects, four stages    1.121s  ->  0.957s   (CPU 4.02s -> 3.09s)
+```
+
+Running 50 pipelines — 150 stages — creates **three** threads.
+
+The pool is a *cache of idle threads, never a limit on how many stages can
+run*. `spawn` never waits: if nothing is parked it makes one. That is not an
+optimisation but a correctness requirement, because every stage of a pipeline
+has to be running for any of it to progress — a stage queued behind a busy pool
+while the stage ahead of it blocks on a full channel is a deadlock. Workers are
+renamed per task, so `plumb:ls` and `plumb:digest/3` still appear in backtraces.
+
+This is deliberately *not* stage fusion, which is what open work item 1
+proposed. Measured, fusion buys ~37% less CPU on a long pipeline and **no
+wall-clock latency at all** — stages already run concurrently, so the channel
+cost is paid in parallel. Pooling attacks the cost measurement actually found,
+and leaves `emit`, the stage protocol and one-thread-per-stage alone.
 
 ## workers
 
@@ -895,6 +922,7 @@ completion all read that one package.
 | `src/reader.lisp` | word mode: `\|`, `{...}`, `.field`, earmuffs |
 | `src/present.lisp` | `present` generic, table rendering |
 | `src/stage.lisp` | `defstage`, dynamic ports, `do-input`/`emit`/`finish` |
+| `src/pool.lisp` | stage threads leased from a cache instead of created |
 | `src/pipeline.lisp` | wiring, spawning, teardown, type checking |
 | `src/stages.lisp` | `from-list` `counter` `ls` `lines` `where` `xform` `take` `drop` `uniq` `peek` `sort-by` `tally` `accumulate` `to-text` `print-items` `table` |
 | `src/process.lisp` | `sh` / `to-sh` / `ps`: external commands and the process table |

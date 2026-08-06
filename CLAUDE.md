@@ -8,7 +8,7 @@ carrying Lisp objects, instead of processes and byte streams. SBCL only
 except in `plumb/crypto`, which is optional and separate for that reason.
 
 ```
-sbcl --eval '(asdf:test-system "plumb")'   ; 421 assertions, all passing
+sbcl --eval '(asdf:test-system "plumb")'   ; 433 assertions, all passing
 make                                       ; dump bin/plumb
 sbcl --script demo.lisp
 make crypto && make test-crypto            ; the optional Ironclad system
@@ -110,6 +110,20 @@ make crypto && make test-crypto            ; the optional Ironclad system
   the walk reaches it, and `**` interleaves its two cases per entry so the
   walk is genuinely depth first. Doing the zero-level pass first emits every
   sibling before descending into any, which a final sort used to hide.
+- **Stage threads are pooled, and the pool must stay elastic.** `spawn` never
+  waits for a free worker: every stage of a pipeline has to be running for any
+  of it to progress, so a stage queued behind a busy pool while the stage ahead
+  blocks on a full channel is a *deadlock*, not a slow start. The pool is a
+  cache of idle threads and nothing more. Bounding it would look like a tidy-up
+  and would hang the first pipeline wider than the bound.
+- **Fusion is a CPU optimisation, not a latency one** -- measured, so it is not
+  re-derived. Three `xform`s over 1M objects: 4 channels 1.121s wall / 4.02s
+  CPU, the same work hand-fused to 2 channels 1.149s wall / 2.54s CPU. Stages
+  already run concurrently, so channel cost is paid in parallel and removing
+  channels bought *nothing* in wall clock. What was real was setup:
+  `make-thread` 28us against 2.6us for a pooled lease, and ~113us of a
+  four-stage pipeline's 214us. That is why `src/pool.lisp` exists and
+  `src/fuse.lisp` does not.
 - **Parallelism is opt-in, because the unsafe cases fail silently.** A stage
   declares `(:parallel t)` and `defstage` gives it `&key (workers 1)`; `run`
   then spawns that many threads sharing one input. Nothing about a thunk says
@@ -171,11 +185,16 @@ make crypto && make test-crypto            ; the optional Ironclad system
 
 ## Open work, roughly in priority order
 
-1. **Stage fusion.** `where`, `xform`, `take` and other simple transducers should
-   collapse into one thread. Note this is the opposite lever from `:workers`,
-   not a competitor to it: fuse the cheap stages, parallelise the expensive one. A thread per stage is fine at 6 stages; it is not
-   fine when a loop spawns a pipeline per file. Needs a `fusable-p` flag on
-   `stage` and a pass in `run` that composes thunks.
+1. **Stage fusion.** `where`, `xform`, `take` and other simple transducers could
+   collapse into one thread. Still open, but *demoted*. The cost that motivated
+   it -- "not fine when a loop spawns a pipeline per file" -- was thread
+   creation, and `src/pool.lisp` now removes that at a fraction of the blast
+   radius. What fusion still buys is ~37% CPU on a long pipeline and no wall
+   clock at all (measurements above). It would need a per-object step separated
+   from the `do-input` loop -- a second way to write a stage -- plus `emit`
+   becoming an indirect call, and `watch` would lose its per-stage numbers
+   because the channels it reads would be gone. Do not start it without a
+   workload that is actually CPU-bound on channel traffic.
 2. **Fan-out, the rest of it.** `tee` (`src/stages.lisp`) fans one stream into
    several pipelines, built on `run :input`. Copy-on-fanout is settled:
    objects are **shared**, and copying is a stage (`(xform #'copy-file-entry)`

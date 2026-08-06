@@ -22,6 +22,7 @@
                ;; keyword that is a required argument.
                (:file "stage")
                (:file "reader")
+               (:file "pool")
                (:file "pipeline")
                (:file "stages")
                (:file "process")

@@ -122,7 +122,7 @@ leaves it plain and the assertions can look for bare text."
               x
               (unless ok (return))))
       (join pipe)
-      (check (notany #'sb-thread:thread-alive-p (pipeline-threads pipe))
+      (check (notany #'task-live-p (pipeline-tasks pipe))
              :all-threads-dead))))
 
 (defun test-collecting-stage ()
@@ -153,7 +153,7 @@ leaves it plain and the assertions can look for bare text."
       (join pipe)
       (check (= 1 (length (pipeline-failures pipe))) :one-failure)
       (check (eq 'xform (car (first (pipeline-failures pipe)))) :failure-attributed)
-      (check (notany #'sb-thread:thread-alive-p (pipeline-threads pipe))
+      (check (notany #'task-live-p (pipeline-tasks pipe))
              :error-tears-down))))
 
 (defun test-error-object-reaches-err-port ()
@@ -181,7 +181,7 @@ leaves it plain and the assertions can look for bare text."
     (let ((pipe (run (list (counter) (xform #'identity)))))
       (sleep 0.1)
       (cancel pipe)
-      (check (notany #'sb-thread:thread-alive-p (pipeline-threads pipe)) :cancelled))))
+      (check (notany #'task-live-p (pipeline-tasks pipe)) :cancelled))))
 
 (defun test-each-backpressure-end-to-end ()
   "A slow consumer must not let the source race ahead unboundedly."
@@ -1442,9 +1442,7 @@ retires one of them and leaves seven reading."
            (pipe (run (list (counter) (xform #'identity :workers 4)) :sink sink)))
       (sleep 0.2)
       (cancel pipe)
-      (check (every (lambda (th) (not (sb-thread:thread-alive-p th)))
-                    (pipeline-threads pipe))
-             :every-worker-stopped))))
+      (check (notany #'task-live-p (pipeline-tasks pipe)) :every-worker-stopped))))
 
 (defun test-workers-need-the-parallel-declaration ()
   "Opt-in, because the unsafe cases fail silently.  TAKE mutates the
@@ -1589,6 +1587,113 @@ be the start of re-implementing lsblk's option set."
          :disks-takes-no-arguments)
   (check (eq :source (plumb::stage-kind (gethash 'disks plumb::*stages*)))
          :disks-is-a-source))
+
+
+;;; --------------------------------------------------------------- thread pool
+
+(defun test-pool-reuses-threads ()
+  "The point of the pool: running many pipelines must stop making threads.
+Measured as threads CREATED against stages started, because that is the cost
+being removed -- ~28us of MAKE-THREAD per stage."
+  (with-timeout (30 :pool-reuse)
+    (let ((before (getf (pool-statistics) :created)))
+      (dotimes (i 200)
+        (collect-pipeline (list (from-list (list 1 2)) (where #'oddp) (tally))))
+      (let ((made (- (getf (pool-statistics) :created) before)))
+        ;; 600 stages started.  A handful of threads, not hundreds.
+        (check (< made 60) :threads-created-is-not-proportional-to-stages)))))
+
+(defun test-pool-never-waits-for-a-free-worker ()
+  "The property everything rests on.  Every stage of a pipeline must be running
+for any of it to progress, so a pool that made a stage queue for a worker would
+deadlock rather than run slowly.  Pinned by shrinking the idle cache to one and
+running a pipeline far wider than it."
+  (with-timeout (30 :pool-elastic)
+    (let ((*idle-workers* 1))
+      (let ((stages (append (list (counter :limit 20))
+                            (loop repeat 24 collect (xform #'1+))
+                            (list (tally)))))
+        (check (equal '(20) (collect-pipeline stages)) :a-26-stage-pipeline-completes)))
+    ;; And several at once, each wider than the cache.
+    (let ((*idle-workers* 2)
+          (results (make-array 20 :initial-element nil)))
+      (let ((threads (loop for i below 20
+                           collect (let ((i i))
+                                     (sb-thread:make-thread
+                                      (lambda ()
+                                        (setf (aref results i)
+                                              (collect-pipeline
+                                               (list (counter :limit 5)
+                                                     (xform #'1+) (xform #'1+)
+                                                     (tally))))))))))
+        (mapc #'sb-thread:join-thread threads)
+        (check (every (lambda (r) (equal '(5) r)) results)
+               :twenty-concurrent-pipelines-all-complete)))))
+
+(defun test-a-stuck-stage-does-not-starve-later-pipelines ()
+  "A worker held forever by a blocked stage is fine -- it is not idle, so it is
+not reused -- but it must not stop anything else from starting."
+  (with-timeout (30 :pool-stuck)
+    (let* ((sink (make-channel :capacity 1))
+           (stuck (run (list (counter) (xform #'identity)) :sink sink)))
+      (unwind-protect
+           (progn
+             (sleep 0.2)                ; both stages now wedged on a full sink
+             (check (equal '(1 2) (collect-pipeline (list (from-list (list 1 2)))))
+                    :a-later-pipeline-still-runs))
+        (cancel stuck)))))
+
+(defun test-a-failing-task-releases-its-worker ()
+  "SPAWN-STAGE handles what a stage is expected to signal; the pool's own
+unwind-protect is the backstop for what it is not.  A task that dies must still
+signal completion -- otherwise AWAIT hangs -- and must leave its worker usable."
+  (with-timeout (20 :pool-failure)
+    (let ((condition (await (spawn "plumb:test-boom" (lambda () (error "boom"))))))
+      (check (typep condition 'error) :the-condition-comes-back-from-await)
+      (check (search "boom" (princ-to-string condition)) :and-it-is-the-right-one))
+    ;; The pool is still working afterwards.
+    (let ((ran nil))
+      (await (spawn "plumb:test-after" (lambda () (setf ran t))))
+      (check ran :the-pool-still-runs-tasks-after-a-failure))
+    ;; A warning is not a death: SERIOUS-CONDITION, not CONDITION.
+    (let ((finished nil))
+      (await (spawn "plumb:test-warn"
+                    (lambda () (handler-bind ((warning #'muffle-warning))
+                                 (warn "noise"))
+                            (setf finished t))))
+      (check finished :a-warning-does-not-abort-a-task))))
+
+(defun test-pooled-threads-still-carry-the-stage-name ()
+  "Names are per task, not per thread, so plumb:LS still appears in a backtrace
+and in LIST-ALL-THREADS.  Losing that would make every future concurrency bug
+harder to read."
+  (with-timeout (20 :pool-names)
+    (let ((seen nil))
+      (await (spawn "plumb:test-name"
+                    (lambda () (setf seen (sb-thread:thread-name
+                                           sb-thread:*current-thread*)))))
+      (check (equal "plumb:test-name" seen) :the-task-name-is-the-thread-name))
+    ;; And a real stage gets the name RUN gave it.
+    (let ((names '()))
+      (join (run (list (counter :limit 3)
+                       (xform (lambda (x)
+                                (push (sb-thread:thread-name sb-thread:*current-thread*)
+                                      names)
+                                x)))))
+      (check (member "plumb:XFORM" names :test #'string-equal) :stages-are-named))))
+
+(defun test-await-is-idempotent ()
+  "JOIN may be called twice on one pipeline -- CANCEL joins one it has already
+torn down -- so a second AWAIT must not block waiting for a permit that has
+already been taken."
+  (with-timeout (20 :pool-await-twice)
+    (let ((task (spawn "plumb:test-twice" (lambda () 42))))
+      (await task)
+      (check (null (await task)) :second-await-returns-immediately)
+      (check (not (task-live-p task)) :and-the-task-reads-as-finished))
+    (let ((pipe (run (list (counter :limit 3) (tally)))))
+      (join pipe)
+      (check (null (join pipe)) :joining-a-pipeline-twice-is-fine))))
 
 ;;; --------------------------------------------------------------------- help
 
@@ -1754,6 +1859,12 @@ be the start of re-implementing lsblk's option set."
                   test-disks-agrees-with-the-system-tool
                   test-disks-usage-only-where-mounted
                   test-disks-has-no-selection-options
+                  test-pool-reuses-threads
+                  test-pool-never-waits-for-a-free-worker
+                  test-a-stuck-stage-does-not-starve-later-pipelines
+                  test-a-failing-task-releases-its-worker
+                  test-pooled-threads-still-carry-the-stage-name
+                  test-await-is-idempotent
                   test-help-registry
                   test-help-listing
                   test-help-detail

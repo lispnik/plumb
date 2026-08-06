@@ -21,8 +21,10 @@
    #:stage-ports #:stage-port-types #:extra-ports #:port-type
    ;; pipelines
    #:pipeline #:run #:collect-pipeline #:each #:join #:cancel
-   #:pipeline-failures #:pipeline-threads #:pipeline-stages
+   #:pipeline-failures #:pipeline-tasks #:pipeline-stages
    #:pipeline-channels #:pipeline-branches #:pipeline-sink #:pipeline-error #:pipeline-error-stage #:pipeline-error-cause
+   ;; the stage-thread pool (src/pool.lisp)
+   #:spawn #:await #:task-live-p #:pool-statistics #:drain-pool #:*idle-workers*
    #:check-pipeline #:pipeline-type-error #:pipeline-type-error-port
    #:pipeline-type-error-upstream #:pipeline-type-error-downstream
    ;; built-in stages
