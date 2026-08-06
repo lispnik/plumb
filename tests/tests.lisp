@@ -1803,12 +1803,30 @@ is why this stage has no platform fork at all."
 (defun test-commits-can-be-bounded-by-take ()
   "No :LIMIT option, for the reason PS gives.  TAKE closing the channel has to
 stop the git walk, or `commits | take 5` on a large repository would read the
-whole history first."
+whole history first.
+
+Builds its own repository rather than using the one the suite happens to be run
+from: that assumed the working directory is a checkout with commits in it, which
+is true here and false anywhere the tree was copied without .git -- it failed
+the first time this ran on Linux."
   (with-timeout (60 :commits-take)
-    ;; This repository has more than three commits by now.
-    (let ((cs (collect-pipeline (list (commits) (take 3)))))
-      (check (= 3 (length cs)) :take-bounds-the-walk)
-      (check (every #'commit-p cs) :and-they-are-commits))))
+    (let ((dir "/tmp/plumb-git-take-test/"))
+      (flet ((sh (command)
+               (sb-ext:run-program "/bin/sh" (list "-c" command) :search nil :wait t)))
+        (unwind-protect
+             (progn
+               (sh (format nil "rm -rf ~a; mkdir -p ~a" dir dir))
+               (sh (format nil "cd ~a && git init -q . && git config user.email t@t && ~
+git config user.name Tester && for i in 1 2 3 4 5; do ~
+echo $i > f$i.txt && git add -A && git commit -qm \"commit $i\"; done" dir))
+               (check (= 5 (length (collect-pipeline (list (commits :directory dir)))))
+                      :the-fixture-has-five-commits)
+               (let ((cs (collect-pipeline (list (commits :directory dir) (take 3)))))
+                 (check (= 3 (length cs)) :take-bounds-the-walk)
+                 (check (every #'commit-p cs) :and-they-are-commits)
+                 ;; Newest first, which is git log's order and must survive.
+                 (check (string= "commit 5" (commit-subject (first cs))) :newest-first)))
+          (sh (format nil "rm -rf ~a" dir)))))))
 
 (defun test-changes ()
   "porcelain v2 -- the format git documents as stable for scripts, where the
