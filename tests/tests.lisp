@@ -1754,6 +1754,96 @@ every cell replaced by the object.  ENV-VAR was the first type to have one."
     (check (string= "value" (string-trim " " (first lines))) :scalars-keep-the-header)
     (check (string= "1" (string-trim " " (second lines))) :and-print-themselves)))
 
+
+;;; ------------------------------------------------------------------- git
+
+(defmacro with-git-fixture ((dir) &body body)
+  "A repository with the cases that break a naive parser: a path containing a
+space, a staged rename, a worktree-only modification and an untracked file."
+  `(let ((,dir "/tmp/plumb-git-test/"))
+     (flet ((sh (command)
+              (sb-ext:run-program "/bin/sh" (list "-c" command) :search nil :wait t)))
+       (unwind-protect
+            (progn
+              (sh (format nil "rm -rf ~a; mkdir -p ~a" ,dir ,dir))
+              (sh (format nil "cd ~a && git init -q . && git config user.email t@t && ~
+git config user.name Tester && printf 'a\\n' > kept.txt && ~
+printf 'b\\n' > 'spaced name.txt' && printf 'c\\n' > renamed-from.txt && ~
+git add -A && git commit -qm 'first commit' && ~
+printf 'more\\n' >> kept.txt && ~
+printf 'x\\n' >> 'spaced name.txt' && git add 'spaced name.txt' && ~
+git mv renamed-from.txt renamed-to.txt && printf 'z\\n' > untracked.txt" ,dir))
+              ,@body)
+         (sh (format nil "rm -rf ~a" ,dir))))))
+
+(defun test-commits ()
+  "git log --format is git's own contract, identical on every platform, which
+is why this stage has no platform fork at all."
+  (with-timeout (60 :commits)
+    (with-git-fixture (dir)
+      (let ((cs (collect-pipeline (list (commits :directory dir)))))
+        (check (= 1 (length cs)) :one-commit-so-far)
+        (let ((c (first cs)))
+          (check (commit-p c) :emits-commits)
+          (check (= 40 (length (commit-hash c))) :full-hash)
+          (check (eql 0 (search (commit-short c) (commit-hash c))) :short-is-a-prefix)
+          (check (string= "Tester" (commit-author c)) :author)
+          (check (string= "t@t" (commit-email c)) :email)
+          (check (string= "first commit" (commit-subject c)) :subject)
+          ;; The root commit has no parent.
+          (check (null (commit-parents c)) :root-has-no-parents)
+          ;; A universal time, like LS's .mtime -- not a unix stamp and not a
+          ;; string, so one 7d literal compares against either.
+          (check (integerp (commit-date c)) :date-is-a-number)
+          (check (< (encode-universal-time 0 0 0 1 1 2020 0)
+                    (commit-date c)
+                    (+ (get-universal-time) 86400))
+                 :date-is-a-plausible-universal-time))))))
+
+(defun test-commits-can-be-bounded-by-take ()
+  "No :LIMIT option, for the reason PS gives.  TAKE closing the channel has to
+stop the git walk, or `commits | take 5` on a large repository would read the
+whole history first."
+  (with-timeout (60 :commits-take)
+    ;; This repository has more than three commits by now.
+    (let ((cs (collect-pipeline (list (commits) (take 3)))))
+      (check (= 3 (length cs)) :take-bounds-the-walk)
+      (check (every #'commit-p cs) :and-they-are-commits))))
+
+(defun test-changes ()
+  "porcelain v2 -- the format git documents as stable for scripts, where the
+human-readable one explicitly is not."
+  (with-timeout (60 :changes)
+    (with-git-fixture (dir)
+      (let* ((cs (collect-pipeline (list (changes :directory dir))))
+             (by (lambda (p) (find p cs :key #'change-path :test #'string=))))
+        (check (= 4 (length cs)) :four-entries)
+        ;; Modified in the worktree only: git's second column, not its first.
+        (let ((kept (funcall by "kept.txt")))
+          (check (eq :modified (change-unstaged kept)) :worktree-modification)
+          (check (null (change-staged kept)) :and-nothing-staged))
+        ;; Staged, so the other column.
+        (let ((spaced (funcall by "spaced name.txt")))
+          (check spaced :a-path-containing-a-space-survives)
+          (check (eq :modified (change-staged spaced)) :staged-modification))
+        ;; A rename carries where it came from.
+        (let ((renamed (funcall by "renamed-to.txt")))
+          (check (eq :renamed (change-status renamed)) :rename-detected)
+          (check (string= "renamed-from.txt" (change-old-path renamed)) :old-path))
+        (let ((new (funcall by "untracked.txt")))
+          (check (eq :untracked (change-status new)) :untracked))))))
+
+(defun test-git-outside-a-repository-is-a-clear-error ()
+  "The failure has to name itself.  GIT exits non-zero and WITH-COMMAND turns
+that into COMMAND-FAILED, which rides the :ERR port like any other stage error."
+  (with-timeout (30 :git-not-a-repo)
+    (let ((condition (nth-value 1 (ignore-errors
+                                   (collect-pipeline (list (commits :directory "/tmp/"))
+                                                     :errorp t)))))
+      (check condition :running-outside-a-repository-fails)
+      (check (search "git" (string-downcase (princ-to-string condition)))
+             :and-the-message-names-git))))
+
 ;;; --------------------------------------------------------------------- help
 
 (defun stage-named (name) (gethash name plumb::*stages*))
@@ -1926,6 +2016,10 @@ every cell replaced by the object.  ENV-VAR was the first type to have one."
                   test-await-is-idempotent
                   test-env
                   test-a-field-named-value-is-not-the-whole-row
+                  test-commits
+                  test-commits-can-be-bounded-by-take
+                  test-changes
+                  test-git-outside-a-repository-is-a-clear-error
                   test-help-registry
                   test-help-listing
                   test-help-detail

@@ -28,7 +28,7 @@
    #:check-pipeline #:pipeline-type-error #:pipeline-type-error-port
    #:pipeline-type-error-upstream #:pipeline-type-error-downstream
    ;; built-in stages
-   #:from-list #:counter #:ls #:lines #:sh #:to-sh #:glob #:ps #:disks #:env
+   #:from-list #:counter #:ls #:lines #:sh #:to-sh #:glob #:ps #:disks #:env #:commits #:changes
    #:glob-match #:glob-pattern-p #:read-directory-names #:basename #:map-glob
    #:where #:xform #:take #:drop #:uniq #:sort-by #:tally #:accumulate
    #:peek #:to-text #:print-items #:table #:to-file #:from-file #:tee #:route
@@ -61,6 +61,11 @@
    #:fs-size #:fs-mode #:fs-nlink #:fs-uid #:fs-gid #:fs-ino #:fs-dev #:fs-rdev
    #:fs-atime #:fs-atime-nsec #:fs-mtime #:fs-mtime-nsec #:fs-ctime #:fs-ctime-nsec
    #:fs-birthtime #:fs-blocks #:fs-blksize
+   #:commit #:make-commit #:copy-commit #:commit-p
+   #:commit-hash #:commit-short #:commit-author #:commit-email
+   #:commit-date #:commit-parents #:commit-subject
+   #:change #:make-change #:copy-change #:change-p
+   #:change-path #:change-status #:change-staged #:change-unstaged #:change-old-path
    #:env-var #:make-env-var #:copy-env-var #:env-var-p
    #:env-var-name #:env-var-value
    #:line #:make-line #:copy-line #:line-text #:line-number #:line-source

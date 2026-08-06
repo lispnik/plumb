@@ -27,6 +27,7 @@
                (:file "stages")
                (:file "process")
                (:file "blockdev")
+               (:file "git")
                (:file "explain")
                (:file "watch")
                (:file "help"))
