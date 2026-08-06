@@ -157,19 +157,38 @@ the one that matters -- prints nothing, rather than a stray NIL."
     (loop for line = (read-line stream nil nil)
           while line do (write-line line out))))
 
+(defun eval-word-mode (text quiet)
+  "Word mode, a pipeline at a time.
+
+Lines are ACCUMULATED until they read, rather than evaluated one by one, so an
+unclosed { or ( continues onto the next -- which is what the REPL has always
+done.  Evaluating each line separately meant a block spanning two lines worked
+at the prompt and failed in a script, from the same text."
+  (let ((pending ""))
+    (dolist (line (plumb::split-lines text))
+      (let ((trimmed (string-trim '(#\Space #\Tab #\Return) line)))
+        ;; Blank and ; lines are skipped, but only between pipelines: inside an
+        ;; unclosed block they are the user's own text.
+        (unless (and (string= pending "")
+                     (or (string= "" trimmed) (char= (char trimmed 0) #\;)))
+          (setf pending (if (string= pending "")
+                            trimmed
+                            (format nil "~a~%~a" pending line)))
+          (multiple-value-bind (forms status) (try-read pending)
+            (ecase status
+              (:incomplete)             ; collect another line
+              (:error (setf pending "") (error forms))
+              (:ok (setf pending "")
+                   (dolist (form forms) (eval-and-present form quiet))))))))
+    ;; Ran out of input mid-pipeline: say so rather than discarding it.
+    (unless (string= pending "")
+      (error "Unterminated pipeline: ~a" pending))))
+
 (defun eval-text (text quiet)
   "Evaluate TEXT as either Lisp forms or word-mode pipelines.  A leading paren
 decides, per PLUMB:SHELL-SYNTAX-P -- see CLAUDE.md open work 5."
   (if (plumb:shell-syntax-p text)
-      ;; One pipeline per line: word mode has no line continuation.  Blank
-      ;; lines and ; comments are skipped, so a word-mode script can be
-      ;; commented like any other -- SHELL-SYNTAX-P already looks past them to
-      ;; decide the mode, and it would be strange for the mode check to
-      ;; tolerate a comment the evaluator then choked on.
-      (dolist (line (plumb::split-lines text))
-        (let ((trimmed (string-trim '(#\Space #\Tab #\Return) line)))
-          (unless (or (string= "" trimmed) (char= (char trimmed 0) #\;))
-            (eval-and-present (plumb:read-shell trimmed) quiet))))
+      (eval-word-mode text quiet)
       (with-input-from-string (in text)
         (loop for form = (read in nil *eof*)
               until (eq form *eof*)
