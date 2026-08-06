@@ -23,14 +23,16 @@
 dumped.  The system definition stays the one source of truth.")
 
 (defun version-string ()
-  "The version, and which flavour of binary this is.
+  "The version, and which optional systems this binary was built with.
 
-`make build` and `make crypto` write the same path, and the only way to tell
-them apart used to be the file size -- so `make demo`, which rebuilt the plain
-one, could silently take the digest stages away.  Asked of the registry rather
-than recorded at dump time, so it cannot disagree with what is actually here."
-  (format nil "plumb ~a~@[ ~a~]" *version*
-          (when (gethash 'plumb::digest plumb:*stages*) "(+crypto)")))
+Asked of the stage registry rather than recorded at dump time, so it cannot
+disagree with what is actually in the image -- which is the whole point of
+reporting it: a binary quietly missing FROM-JSON or DIGEST would otherwise look
+identical to one that has them."
+  (let ((extras (remove nil
+                        (list (when (gethash 'plumb::digest plumb:*stages*) "+crypto")
+                              (when (gethash 'plumb::from-json plumb:*stages*) "+json")))))
+    (format nil "plumb ~a~@[ (~{~a~^ ~})~]" *version* extras)))
 
 (defvar *eof* (list :eof) "Unique marker; NIL and :EOF are both legal forms.")
 (defvar *edit* t "NIL disables line editing (--no-edit), for odd terminals.")

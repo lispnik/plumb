@@ -1,14 +1,14 @@
 # plumb
 
 Thread-and-channel pipelines that carry Lisp objects instead of bytes.
-SBCL, plus two vendored libraries: jzon in the core for `from-json`/`to-json`,
-and Ironclad in the optional `plumb/crypto` for digests. Both are pinned by a
-committed `ocicl.csv` and restored with `ocicl install`, so the build needs no
-network and no dependency manager.
+The core is SBCL only. Every external library lives in an optional system --
+`plumb/json` (jzon) and `plumb/crypto` (Ironclad) -- vendored under `ocicl/`,
+pinned by a committed `ocicl.csv` and restored with `ocicl install`. **The
+binary builds with all of them**, so `plumb` on your PATH has everything.
 
 ```lisp
-(asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 551 assertions on macOS, 560 on Linux
+(asdf:load-system "plumb")     ; core only -- nothing outside SBCL
+(asdf:test-system "plumb")     ; 491 assertions on macOS, 500 on Linux
 ```
 
 ```
@@ -924,13 +924,14 @@ stages on top of Ironclad, and it is separate for exactly that reason: `make`,
 installed.
 
 ```
-make crypto            # bin/plumb with the digest stages baked in
+make                   # bin/plumb, with plumb/json and plumb/crypto in it
 make test-crypto       # 79 assertions
-plumb --version        # says "(+crypto)" when this is that binary
+make test-json         # 60 assertions
+plumb --version        # plumb 0.1.0 (+crypto +json)
 ```
 
 Ironclad and its dependencies are **vendored** in `ocicl/`, pinned by
-`ocicl.csv` (committed; the unpacked tree is not). So `make crypto` needs no
+`ocicl.csv` (committed; the unpacked tree is not). So the build needs no
 network, no Quicklisp and no dependency manager — and, more to the point, it
 cannot quietly resolve Ironclad out of some unrelated checkout that happens to
 be on your ASDF source registry. Refresh with `ocicl install ironclad`.

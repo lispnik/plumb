@@ -23,15 +23,18 @@
 (handler-bind ((warning #'muffle-warning))
   (asdf:load-system "plumb/cli"))
 
-;; PLUMB_CRYPTO=1 (that is, `make crypto`) adds the digest stages.  Off by
-;; default because Ironclad is the only external dependency in the project and
-;; the plain build must work without it.  Loading it here is enough: crypto.lisp
-;; defines into PLUMB and exports at load time, so DIGEST reaches the dumped
-;; image as an ordinary built-in.  Ironclad comes from ocicl/, vendored in this
-;; repository -- no network, no Quicklisp, no dependency manager at build time.
-(when (sb-ext:posix-getenv "PLUMB_CRYPTO")
-  (handler-bind ((warning #'muffle-warning))
-    (asdf:load-system "plumb/crypto")))
+;; Every optional system, always.  The core is deliberately free of external
+;; libraries so `asdf:load-system "plumb"` and `make test` need nothing outside
+;; SBCL -- but a `plumb` on your PATH should have everything, so the BINARY
+;; loads them all.  Each defines into the PLUMB package and exports at load
+;; time, so its stages arrive as ordinary built-ins.
+;;
+;; A failure here is fatal on purpose.  A binary silently missing FROM-JSON or
+;; DIGEST is the same trap as a build silently picking a flavour: it reports
+;; success and the stage is simply not there.
+(handler-bind ((warning #'muffle-warning))
+  (dolist (system '("plumb/json" "plumb/crypto"))
+    (asdf:load-system system)))
 
 ;; Bake the version into the image, so the system definition stays the single
 ;; source of truth and the binary does not need ASDF at runtime.

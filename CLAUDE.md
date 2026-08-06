@@ -3,17 +3,18 @@
 ## What this is
 
 `plumb` — an experiment in shell pipelines built from threads and channels
-carrying Lisp objects, instead of processes and byte streams. SBCL plus two
-vendored libraries: **jzon** in the core (`from-json`/`to-json`) and **Ironclad**
-in the optional `plumb/crypto`. Both live in `ocicl/`, pinned by a committed
-`ocicl.csv`, so the build needs no network and no dependency manager -- but it
-does need that tree, and `make` says so if it is missing.
+carrying Lisp objects, instead of processes and byte streams. The **core** is
+SBCL only -- no external libraries -- and every dependency lives in an optional
+system: `plumb/json` (jzon) and `plumb/crypto` (Ironclad). The **binary** builds
+with all of them, so `plumb` on your PATH has everything while
+`asdf:load-system "plumb"` and `make test` need nothing outside SBCL.
 
 ```
-sbcl --eval '(asdf:test-system "plumb")'   ; 539 assertions on macOS, 548 on Linux
-make                                       ; dump bin/plumb
+sbcl --eval '(asdf:test-system "plumb")'   ; 491 assertions, core only
+make                                       ; dump bin/plumb, with every system
+make test-json && make test-crypto         ; 60 and 79, the optional systems
 sbcl --script demo.lisp
-make crypto && make test-crypto            ; the optional Ironclad system
+ocicl install                              ; restore ocicl/ after a fresh clone
 ```
 
 ## Design decisions already made — don't relitigate these without reason
@@ -184,12 +185,15 @@ make crypto && make test-crypto            ; the optional Ironclad system
   Ironclad out of a *neighbouring project* under the user's own
   `(:tree "~/Projects/common-lisp/")` -- it built here and would have built
   nowhere else.
-- **jzon is a CORE dependency; Ironclad stays optional.** That asymmetry is
-  deliberate. `from-json` is worth having only if it is always there -- its
-  value is that *every* `--json` tool becomes a source, which an opt-in build
-  would gut -- whereas digests are a genuine extra. `plumb/crypto` still defines
-  into the `plumb` package rather than its own, because the reader, `help` and
-  TAB completion all read that one package.
+- **Every external library is an optional system; the binary takes them all.**
+  `plumb/json` and `plumb/crypto` each hold one library, one source file and one
+  test system. That keeps the core loadable and testable with nothing but SBCL,
+  *and* keeps `from-json` always present where it matters -- because its value
+  is that every `--json` tool becomes a source, which an opt-in binary would
+  gut. `build.lisp` loading them is deliberately fatal on failure: a binary
+  quietly missing a stage is the same trap as a build silently picking a
+  flavour. Each defines into the `plumb` package rather than its own, because
+  the reader, `help` and TAB completion all read that one package.
 
 ## Invariants to preserve
 
@@ -207,13 +211,14 @@ make crypto && make test-crypto            ; the optional Ironclad system
    right for `plumb 'expr'` and wrong at a prompt; `eval-forms-interruptibly`
    is what makes the REPL survive it, and unwinding through `each`'s
    `unwind-protect` is all the teardown it needs.
-6. `make build` and `make crypto` write the same path, so **nothing may quietly
-   pick a flavour**. Each drops a marker under `bin/` and deletes the other's,
-   and each removes `bin/plumb` first, because `program-op` skips the dump when
-   its output is newer than its inputs and would otherwise report success over
-   the wrong binary. `demo` must not depend on `build` — it did, and silently
-   replaced a crypto binary with a plain one. `--version` reports `(+crypto)`
-   by asking the stage registry, so it cannot disagree with what is in there.
+6. There is **one** binary flavour, with every optional system in it. Two
+   flavours writing the same path needed marker files under `bin/` so that
+   `make`, `make demo` and `make crypto` could not hand you the wrong one, and
+   that trap is now gone by construction. `bin/plumb` is still removed before
+   each dump, because `program-op` skips the dump when its output is newer than
+   its inputs and would otherwise report success without rebuilding.
+   `--version` reports `(+crypto +json)` by asking the stage registry, so it
+   cannot disagree with what is actually in the image.
 
 ## Open work, roughly in priority order
 

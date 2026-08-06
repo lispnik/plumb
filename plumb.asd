@@ -7,12 +7,7 @@
   :version "0.1.0"
   ;; sb-thread / sb-mop are in the SBCL core; sb-introspect is a contrib, used
   ;; only so HELP can show a lambda list for the non-stage built-ins.
-  :depends-on ((:require :sb-introspect) (:require :sb-posix)
-               ;; The one library outside SBCL that the CORE uses, for FROM-JSON
-               ;; and TO-JSON.  Vendored in ocicl/ and pinned by ocicl.csv, so
-               ;; the build still needs no network and no dependency manager --
-               ;; but it does need that tree, which `ocicl install` restores.
-               "com.inuoe.jzon")
+  :depends-on ((:require :sb-introspect) (:require :sb-posix))
   :serial t
   :pathname "src"
   :components ((:file "package")
@@ -33,7 +28,6 @@
                (:file "process")
                (:file "blockdev")
                (:file "git")
-               (:file "json")
                (:file "explain")
                (:file "watch")
                (:file "help"))
@@ -56,6 +50,32 @@
   :build-operation "program-op"
   :build-pathname "bin/plumb"
   :entry-point "plumb.cli:main")
+
+;;; The optional systems.  Each is the same shape: one external library, one
+;;; source file that defines into the PLUMB package and exports at load time,
+;;; and its own test system.  The core stays free of both, so `asdf:load-system
+;;; "plumb"` and `make test` need nothing outside SBCL -- but the BINARY builds
+;;; with all of them, so a `plumb` on your path has everything.
+
+(defsystem "plumb/json"
+  :description "JSON reading and writing for plumb, on com.inuoe.jzon."
+  :author "Matthew"
+  :license "MIT"
+  :version "0.1.0"
+  :depends-on ("plumb" "com.inuoe.jzon")
+  :serial t
+  :components ((:module "src" :components ((:file "json"))))
+  :in-order-to ((test-op (test-op "plumb/json/tests"))))
+
+(defsystem "plumb/json/tests"
+  :description "Test suite for the JSON stages."
+  :depends-on ("plumb/json" "plumb/tests")
+  :serial t
+  :pathname "tests"
+  :components ((:file "json"))
+  :perform (test-op (o c)
+             (unless (uiop:symbol-call :plumb/tests '#:run-json-tests)
+               (error "plumb/json test suite failed."))))
 
 ;;; Digests, via Ironclad.  Deliberately a separate system: "plumb" and
 ;;; "plumb/cli" have no external dependencies and `make` must keep working on a

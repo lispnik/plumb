@@ -8,6 +8,13 @@
 ;;;;   sh "ip -j addr" | from-json | where {(string= .operstate "UP")} | table
 ;;;;   ls "src/*.lisp" | to-json > files.json
 ;;;;
+;;;; Loaded by the PLUMB/JSON system, not the core: jzon is an external library
+;;;; and `plumb` itself stays free of those.  Like src/crypto.lisp it defines
+;;;; into the PLUMB package and exports at load time, because the reader, HELP
+;;;; and TAB completion all read that one package -- a stage in a package of its
+;;;; own would be a second-class built-in.  The dumped binary loads every
+;;;; optional system, so `plumb` on your path always has these.
+;;;;
 ;;;; jzon does the lexing.  What is here is the two things it cannot know: how
 ;;;; JSON should look as *plumb objects*, and how a plumb object should look as
 ;;;; JSON.  Both mappings are chosen for a shell rather than for round-tripping,
@@ -211,3 +218,10 @@ ending the pipeline itself."
         (do-input (x) (vector-push-extend (jsonable x) rows))
         (emit (com.inuoe.jzon:stringify (coerce rows 'simple-vector)
                                         :pretty pretty)))))
+
+;;; Exported here rather than in package.lisp: these symbols only name anything
+;;; once this system is loaded, and HELP lists exported symbols that are FBOUND.
+
+(export '(from-json to-json parse-json to-json-string jsonable
+          json-error json-error-message json-error-position)
+        '#:plumb)
