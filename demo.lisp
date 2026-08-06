@@ -19,11 +19,14 @@
 (format t "~&~%== infinite source, bounded consumer~%")
 (format t "  ~s~%" (collect-pipeline (list (counter) (where #'oddp) (take 6))))
 
-(format t "~&~%== the source thread really is gone~%")
+(format t "~&~%== the source stage really is gone~%")
 (let ((pipe (run (list (counter) (take 3)))))
   (join pipe)
-  (format t "  live threads: ~d~%"
-          (count-if #'sb-thread:thread-alive-p (pipeline-threads pipe))))
+  ;; Stages, not threads.  The threads are pooled, so they go back to the pool
+  ;; rather than dying -- what teardown ends is the stage.
+  (format t "  still running: ~d of ~d stages~%"
+          (count-if #'task-live-p (pipeline-tasks pipe))
+          (length (pipeline-tasks pipe))))
 
 (format t "~&~%== errors are objects, not text on fd 2~%")
 (let* ((err (make-channel))
