@@ -7,7 +7,12 @@
   :version "0.1.0"
   ;; sb-thread / sb-mop are in the SBCL core; sb-introspect is a contrib, used
   ;; only so HELP can show a lambda list for the non-stage built-ins.
-  :depends-on ((:require :sb-introspect) (:require :sb-posix))
+  :depends-on ((:require :sb-introspect) (:require :sb-posix)
+               ;; The one library outside SBCL that the CORE uses, for FROM-JSON
+               ;; and TO-JSON.  Vendored in ocicl/ and pinned by ocicl.csv, so
+               ;; the build still needs no network and no dependency manager --
+               ;; but it does need that tree, which `ocicl install` restores.
+               "com.inuoe.jzon")
   :serial t
   :pathname "src"
   :components ((:file "package")

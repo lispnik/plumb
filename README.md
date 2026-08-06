@@ -1,11 +1,14 @@
 # plumb
 
 Thread-and-channel pipelines that carry Lisp objects instead of bytes.
-SBCL only (`sb-thread`, `sb-mop`); no external dependencies.
+SBCL, plus two vendored libraries: jzon in the core for `from-json`/`to-json`,
+and Ironclad in the optional `plumb/crypto` for digests. Both are pinned by a
+committed `ocicl.csv` and restored with `ocicl install`, so the build needs no
+network and no dependency manager.
 
 ```lisp
 (asdf:load-system "plumb")
-(asdf:test-system "plumb")     ; 539 assertions on macOS, 548 on Linux
+(asdf:test-system "plumb")     ; 551 assertions on macOS, 560 on Linux
 ```
 
 ```
@@ -554,7 +557,7 @@ present on both platforms with the same flags — and since a unix descriptor is
 not only a file, it covers sockets and pipes too, which is why there is no
 separate `connections` stage.
 
-### from-json
+### from-json / to-json
 
 The one that isn't a source at all, and matters most:
 
@@ -568,8 +571,20 @@ Every modern CLI already speaks JSON, so one parser turns all of them into
 sources at once rather than a stage per tool. `ip -j addr | from-json` gives
 network interfaces as objects with no new code at all.
 
-Written out rather than pulled in, because the core has no dependencies and a
-JSON reader is a day's work where a dependency is forever. The mapping is chosen
+`to-json` is the other half, and serialises **any** plumb object -- it is driven
+by `fields`/`field`, the same thing that makes `table` work on everything, so a
+`file-entry`, a `process`, a `commit` or a type you add later all just work:
+
+```
+$ plumb 'ls "src/*.lisp" | to-json > files.json'
+$ plumb 'ps | where {(> .rss 500mb)} | to-json :pretty'
+$ plumb 'ls "src/*" | to-json' | jq -r '.[].name'
+```
+
+Parsing is `com.inuoe.jzon`, through its streaming event API rather than
+`jzon:parse` -- which returns a hash table whose order is unspecified, so
+`table`'s columns would shuffle between runs, and whose keys are strings as
+written, so `.name` would not reach `"Name"`. The mapping is chosen
 for a shell: objects become plists with upcased keyword keys so `.name` works
 and `table` can find its columns; `true` is `T`; **`false` and `null` are both
 `nil`**, deliberately, so `where {.draft}` reads the way you expect. Integers

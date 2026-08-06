@@ -28,7 +28,7 @@
    #:check-pipeline #:pipeline-type-error #:pipeline-type-error-port
    #:pipeline-type-error-upstream #:pipeline-type-error-downstream
    ;; built-in stages
-   #:from-list #:counter #:ls #:lines #:sh #:to-sh #:glob #:ps #:disks #:env #:commits #:changes #:handles #:from-json
+   #:from-list #:counter #:ls #:lines #:sh #:to-sh #:glob #:ps #:disks #:env #:commits #:changes #:handles #:from-json #:to-json
    #:glob-match #:glob-pattern-p #:read-directory-names #:basename #:map-glob
    #:where #:xform #:take #:drop #:uniq #:sort-by #:tally #:accumulate
    #:peek #:to-text #:print-items #:table #:to-file #:from-file #:tee #:route
@@ -66,7 +66,7 @@
    #:commit-date #:commit-parents #:commit-subject
    #:change #:make-change #:copy-change #:change-p
    #:change-path #:change-status #:change-staged #:change-unstaged #:change-old-path
-   #:parse-json #:json-error #:json-error-message #:json-error-position
+   #:parse-json #:to-json-string #:jsonable #:json-error #:json-error-message #:json-error-position
    #:handle #:make-handle #:copy-handle #:handle-p
    #:handle-pid #:handle-command #:handle-uid #:handle-user #:handle-fd
    #:handle-type #:handle-protocol #:handle-state

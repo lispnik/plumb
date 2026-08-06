@@ -1974,8 +1974,10 @@ rather than no answer, so every one of these has to signal."
   ;; And the error says where.
   (let ((c (nth-value 1 (ignore-errors (parse-json "{\"a\":1,}")))))
     (check (typep c 'json-error) :signals-json-error)
-    (check (json-error-position c) :and-carries-a-position)
-    (check (search "character" (princ-to-string c)) :which-the-report-mentions)))
+    ;; jzon reports line and column in its message; that is kept verbatim
+    ;; rather than re-derived, so the report has to carry it through.
+    (check (search "line" (string-downcase (princ-to-string c)))
+           :the-report-says-where)))
 
 (defun test-json-keys-reach-field ()
   "Keys are upcased into keywords so .name works, since FIELD compares field
@@ -2013,6 +2015,49 @@ names case-insensitively everywhere else in the system."
     ;; Nothing in, nothing out -- not an error.
     (check (null (collect-pipeline (list (from-list (list "")) (from-json))))
            :empty-input-emits-nothing)))
+
+
+(defun test-to-json ()
+  "The other half.  Driven by FIELDS and FIELD, so every plumb object
+serialises without knowing anything about JSON."
+  (with-timeout (30 :to-json)
+    ;; One array for the whole stream, which is what a --json reader expects.
+    (let ((out (first (collect-pipeline
+                       (list (from-list (list (list :a 1) (list :a 2))) (to-json))))))
+      (check (stringp out) :emits-text)
+      (check (string= "[{\"a\":1},{\"a\":2}]" out) :one-array-for-the-stream))
+    ;; :LINES is one document per object, and streams rather than collecting.
+    (let ((out (collect-pipeline
+                (list (from-list (list (list :a 1) (list :a 2))) (to-json :lines t)))))
+      (check (equal '("{\"a\":1}" "{\"a\":2}") out) :lines-mode))
+    ;; A struct nobody taught about JSON: keys lowercased, keyword values
+    ;; stringified, pathname to its namestring, NIL to null.
+    (let* ((entry (make-file-entry :name "x" :size 3 :type :file :path #p"/tmp/x"))
+           (back (parse-json (to-json-string entry))))
+      (check (string= "x" (field back :name)) :struct-field)
+      (check (eql 3 (field back :size)) :numeric-field)
+      (check (string= "file" (field back :type)) :keyword-becomes-a-string)
+      (check (string= "/tmp/x" (field back :path)) :pathname-becomes-its-namestring)
+      (check (null (field back :dir-p)) :nil-becomes-null))
+    ;; Round trip through both halves.
+    (let ((back (parse-json (to-json-string (list :a 1 :b "x" :c t :d (list 1 2))))))
+      (check (equal '(:a 1 :b "x" :c t :d (1 2)) back) :round-trip))
+    ;; Nested plumb objects go down recursively.
+    (let ((back (parse-json (to-json-string (list :outer (list :inner 7))))))
+      (check (eql 7 (field (field back :outer) :inner)) :nesting))))
+
+(defun test-to-json-composes-as-bytes ()
+  "TO-JSON produces :BYTES like TO-TEXT, so it ends in a sink rather than being
+one -- which is what lets `| to-file` and `| to-sh` follow it."
+  (check (check-pipeline (list (ls) (to-json) (to-file "/tmp/plumb-json-test.json")))
+         :to-file-can-follow)
+  (check (check-pipeline (list (ls) (to-json) (print-items))) :print-items-can-follow)
+  ;; And FROM-JSON consumes objects, not bytes, so the two do not chain --
+  ;; correctly: the text it reads arrives as LINEs from SH or FROM-FILE.
+  (check (typep (nth-value 1 (ignore-errors
+                              (check-pipeline (list (ls) (to-json) (from-json)))))
+                'pipeline-type-error)
+         :to-json-does-not-feed-from-json))
 
 ;;; --------------------------------------------------------------------- help
 
@@ -2198,6 +2243,8 @@ names case-insensitively everywhere else in the system."
                   test-json-refuses-bad-input
                   test-json-keys-reach-field
                   test-from-json-stage
+                  test-to-json
+                  test-to-json-composes-as-bytes
                   test-help-registry
                   test-help-listing
                   test-help-detail

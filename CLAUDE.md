@@ -3,9 +3,11 @@
 ## What this is
 
 `plumb` — an experiment in shell pipelines built from threads and channels
-carrying Lisp objects, instead of processes and byte streams. SBCL only
-(`sb-thread`, `sb-mop`), no external dependencies, no Quicklisp/ocicl needed --
-except in `plumb/crypto`, which is optional and separate for that reason.
+carrying Lisp objects, instead of processes and byte streams. SBCL plus two
+vendored libraries: **jzon** in the core (`from-json`/`to-json`) and **Ironclad**
+in the optional `plumb/crypto`. Both live in `ocicl/`, pinned by a committed
+`ocicl.csv`, so the build needs no network and no dependency manager -- but it
+does need that tree, and `make` says so if it is missing.
 
 ```
 sbcl --eval '(asdf:test-system "plumb")'   ; 539 assertions on macOS, 548 on Linux
@@ -176,11 +178,18 @@ make crypto && make test-crypto            ; the optional Ironclad system
   the user's own `(:tree "~/Projects/common-lisp/")` -- it built here and would
   have built nowhere else. The vendored tree is listed before
   `:inherit-configuration` so it wins.
-- **One external dependency, in one optional system.** `plumb/crypto` (Ironclad,
-  digests) is the only thing outside SBCL. `plumb`, `plumb/cli` and `make test`
-  must keep working without it. It defines into the `plumb` package rather than
-  its own, because the reader, `help` and TAB completion all read that one
-  package -- a stage in another package is not a built-in.
+- **Dependencies are vendored, never resolved at build time.** `ocicl.csv` is
+  committed and `ocicl/` is not, so `ocicl install` restores an exact tree and
+  the build itself needs no network. Before this, `make crypto` resolved
+  Ironclad out of a *neighbouring project* under the user's own
+  `(:tree "~/Projects/common-lisp/")` -- it built here and would have built
+  nowhere else.
+- **jzon is a CORE dependency; Ironclad stays optional.** That asymmetry is
+  deliberate. `from-json` is worth having only if it is always there -- its
+  value is that *every* `--json` tool becomes a source, which an opt-in build
+  would gut -- whereas digests are a genuine extra. `plumb/crypto` still defines
+  into the `plumb` package rather than its own, because the reader, `help` and
+  TAB completion all read that one package.
 
 ## Invariants to preserve
 

@@ -1,31 +1,25 @@
-;;;; json.lisp -- JSON in, objects out.
+;;;; json.lisp -- JSON in and out, on com.inuoe.jzon.
 ;;;;
 ;;;; This is the force multiplier rather than another source.  Every modern CLI
-;;;; already speaks JSON -- gh, docker, kubectl, aws, ip -j, systemd -- so one
-;;;; parser turns all of them into sources at once, instead of a stage per tool:
+;;;; already speaks JSON -- gh, docker, kubectl, aws, ip -j -- so one reader
+;;;; turns all of them into sources at once instead of a stage per tool, and one
+;;;; writer sends any pipeline back out to them:
 ;;;;
-;;;;   sh "gh pr list --json number,title,author" | from-json
-;;;;     | where {(> .number 100)} | table
+;;;;   sh "ip -j addr" | from-json | where {(string= .operstate "UP")} | table
+;;;;   ls "src/*.lisp" | to-json > files.json
 ;;;;
-;;;; Written out rather than pulled in because the core has no dependencies,
-;;;; and a JSON reader is a day's work where a dependency is forever.  It is a
-;;;; plain recursive descent over a string.
+;;;; jzon does the lexing.  What is here is the two things it cannot know: how
+;;;; JSON should look as *plumb objects*, and how a plumb object should look as
+;;;; JSON.  Both mappings are chosen for a shell rather than for round-tripping,
+;;;; and both are lossy in the same deliberate place -- see NIL below.
 ;;;;
-;;;; The mapping is chosen for a SHELL, not for round-tripping:
-;;;;
-;;;;   object  -> plist with upcased keyword keys, so .name works and FIELDS
-;;;;              can list them for TABLE
-;;;;   array   -> list
-;;;;   string  -> string
-;;;;   number  -> integer or double
-;;;;   true    -> T
-;;;;   false   -> NIL
-;;;;   null    -> NIL
-;;;;
-;;;; FALSE and NULL both becoming NIL loses a distinction, and that is
-;;;; deliberate: `where {.draft}` should work, and a missing key already reads
-;;;; as NIL through FIELD.  Anyone needing to tell them apart is doing
-;;;; something a shell is the wrong tool for.
+;;;; The streaming event API (WITH-PARSER / PARSE-NEXT) rather than JZON:PARSE,
+;;;; for two reasons.  JZON:PARSE returns a hash table, whose iteration order is
+;;;; unspecified -- so TABLE's columns would come out in a different order run
+;;;; to run.  And its keys are strings exactly as written, where FIELD compares
+;;;; names case-insensitively, so `.name` would not reach a key spelled "Name".
+;;;; Walking the events builds the right shape directly instead of building the
+;;;; wrong one and converting it.
 
 (in-package #:plumb)
 
@@ -36,137 +30,7 @@
              (format s "Invalid JSON~@[ at character ~d~]: ~a"
                      (json-error-position c) (json-error-message c)))))
 
-(defstruct (json-cursor (:conc-name jc-) (:copier nil))
-  (text "" :type simple-string)
-  (position 0 :type fixnum))
-
-(defun jc-peek (c)
-  (when (< (jc-position c) (length (jc-text c)))
-    (char (jc-text c) (jc-position c))))
-
-(defun jc-next (c)
-  (let ((ch (jc-peek c)))
-    (when ch (incf (jc-position c)))
-    ch))
-
-(defun jc-fail (c message &rest arguments)
-  (error 'json-error :position (jc-position c)
-                     :message (apply #'format nil message arguments)))
-
-(defun jc-skip-space (c)
-  (loop for ch = (jc-peek c)
-        while (and ch (member ch '(#\Space #\Tab #\Newline #\Return)))
-        do (incf (jc-position c))))
-
-(defun jc-expect (c char)
-  (let ((ch (jc-next c)))
-    (unless (eql ch char)
-      (jc-fail c "expected ~a but found ~@[~a~]~:[ end of input~;~]" char ch ch))))
-
-;;; ----------------------------------------------------------------- strings
-
-(defun json-read-escape (c)
-  "One escape, after the backslash.  \\uXXXX is UTF-16, so a leading surrogate
-must consume the trailing one -- otherwise anything outside the basic plane,
-which is every emoji, decodes to two broken halves."
-  (let ((ch (jc-next c)))
-    (case ch
-      (#\" #\") (#\\ #\\) (#\/ #\/)
-      (#\b #\Backspace) (#\f #\Page) (#\n #\Newline) (#\r #\Return) (#\t #\Tab)
-      (#\u (let ((code (json-read-hex4 c)))
-             (cond
-               ;; Leading surrogate: pair it with the trailing one that must
-               ;; follow, and rebuild the code point.
-               ((<= #xD800 code #xDBFF)
-                (jc-expect c #\\)
-                (jc-expect c #\u)
-                (let ((low (json-read-hex4 c)))
-                  (unless (<= #xDC00 low #xDFFF)
-                    (jc-fail c "leading surrogate not followed by a trailing one"))
-                  (code-char (+ #x10000
-                                (ash (- code #xD800) 10)
-                                (- low #xDC00)))))
-               ((<= #xDC00 code #xDFFF)
-                (jc-fail c "trailing surrogate with nothing before it"))
-               (t (code-char code)))))
-      (t (jc-fail c "unknown escape \\~@[~a~]" ch)))))
-
-(defun json-read-hex4 (c)
-  (let ((value 0))
-    (dotimes (i 4 value)
-      (declare (ignorable i))
-      (let* ((ch (jc-next c))
-             (digit (and ch (digit-char-p ch 16))))
-        (unless digit (jc-fail c "\\u needs four hex digits"))
-        (setf value (+ (* value 16) digit))))))
-
-(defun json-read-string (c)
-  (jc-expect c #\")
-  (let ((out (make-string-output-stream)))
-    (loop
-      (let ((ch (jc-next c)))
-        (cond ((null ch) (jc-fail c "unterminated string"))
-              ((char= ch #\") (return (get-output-stream-string out)))
-              ((char= ch #\\) (write-char (json-read-escape c) out))
-              (t (write-char ch out)))))))
-
-;;; ----------------------------------------------------------------- numbers
-
-(defun json-read-digits (c)
-  "One or more digits, consumed.  JSON requires at least one in each of the
-three number parts, which is what makes `1.`, `.1` and `1e` invalid."
-  (let ((start (jc-position c)))
-    (loop for ch = (jc-peek c)
-          while (and ch (digit-char-p ch))
-          do (jc-next c))
-    (when (= start (jc-position c))
-      (jc-fail c "expected a digit"))))
-
-(defun json-read-number (c)
-  "Integer when it has no fraction or exponent, double otherwise.  An integer
-stays exact -- a 64-bit id turned into a double would silently lose its low
-bits, and ids are exactly what these documents are full of.
-
-The grammar is enforced rather than approximated.  Scanning `digits, maybe a
-dot, maybe an exponent` and handing the text to READ-FROM-STRING accepts `01`,
-`1.`, `.1` and `1e`, none of which are JSON -- and accepting them means
-returning a plausible number for input that is actually malformed, which is the
-one thing this parser must not do."
-  (let ((start (jc-position c))
-        (floatp nil))
-    (when (eql (jc-peek c) #\-) (jc-next c))
-    ;; int := 0 | [1-9][0-9]*   -- a leading zero may not be followed by digits
-    (let ((ch (jc-peek c)))
-      (cond ((null ch) (jc-fail c "expected a number"))
-            ((char= ch #\0)
-             (jc-next c)
-             (let ((next (jc-peek c)))
-               (when (and next (digit-char-p next))
-                 (jc-fail c "a number may not have a leading zero"))))
-            ((digit-char-p ch) (json-read-digits c))
-            (t (jc-fail c "expected a number"))))
-    (when (eql (jc-peek c) #\.)
-      (setf floatp t)
-      (jc-next c)
-      (json-read-digits c))
-    (when (member (jc-peek c) '(#\e #\E))
-      (setf floatp t)
-      (jc-next c)
-      (when (member (jc-peek c) '(#\+ #\-)) (jc-next c))
-      (json-read-digits c))
-    (let ((text (subseq (jc-text c) start (jc-position c))))
-      (if floatp
-          ;; An exponent can overflow a double; that is a malformed *document*
-          ;; as far as a caller is concerned, not a floating-point condition to
-          ;; leak out of the parser.
-          (handler-case
-              (let ((*read-default-float-format* 'double-float)
-                    (*read-eval* nil))
-                (read-from-string text))
-            (error () (jc-fail c "number out of range: ~a" text)))
-          (parse-integer text)))))
-
-;;; ------------------------------------------------------------ the grammar
+;;; ------------------------------------------------------------------ reading
 
 (defun json-key (name)
   "An object key as the keyword FIELD will match.  Upcased, because FIELD
@@ -174,74 +38,110 @@ compares field names case-insensitively everywhere else and .name has to reach
 a key spelled \"name\", \"Name\" or \"NAME\"."
   (intern (string-upcase name) :keyword))
 
-(defun json-read-value (c)
-  (jc-skip-space c)
-  (let ((ch (jc-peek c)))
-    (case ch
-      ((nil) (jc-fail c "unexpected end of input"))
-      (#\{ (json-read-object c))
-      (#\[ (json-read-array c))
-      (#\" (json-read-string c))
-      (#\t (json-read-literal c "true" t))
-      (#\f (json-read-literal c "false" nil))
-      (#\n (json-read-literal c "null" nil))
-      (t (json-read-number c)))))
+(defun json-scalar (value)
+  "One jzon scalar as plumb sees it.
 
-(defun json-read-literal (c text value)
-  (let ((end (+ (jc-position c) (length text))))
-    (unless (and (<= end (length (jc-text c)))
-                 (string= text (jc-text c) :start2 (jc-position c) :end2 end))
-      (jc-fail c "expected ~a" text))
-    (setf (jc-position c) end)
-    value))
+jzon reports JSON null as the symbol NULL, true as T and false as NIL.  Here
+null and false BOTH become NIL, deliberately: `where {.draft}` has to work, and
+an absent key already reads as NIL through FIELD.  Telling null from false is
+something a shell is the wrong tool for."
+  (if (eq value 'null) nil value))
 
-(defun json-read-object (c)
-  (jc-expect c #\{)
-  (jc-skip-space c)
-  (when (eql (jc-peek c) #\})
-    (jc-next c)
-    ;; An empty object is an empty plist, which FIELDS reports as no fields.
-    (return-from json-read-object '()))
-  (let ((plist '()))
-    (loop
-      (jc-skip-space c)
-      (let ((key (json-key (json-read-string c))))
-        (jc-skip-space c)
-        (jc-expect c #\:)
-        (push key plist)
-        (push (json-read-value c) plist))
-      (jc-skip-space c)
-      (case (jc-next c)
-        (#\, )
-        (#\} (return (nreverse plist)))
-        (t (jc-fail c "expected , or } in an object"))))))
-
-(defun json-read-array (c)
-  (jc-expect c #\[)
-  (jc-skip-space c)
-  (when (eql (jc-peek c) #\])
-    (jc-next c)
-    (return-from json-read-array '()))
-  (let ((items '()))
-    (loop
-      (push (json-read-value c) items)
-      (jc-skip-space c)
-      (case (jc-next c)
-        (#\, )
-        (#\] (return (nreverse items)))
-        (t (jc-fail c "expected , or ] in an array"))))))
+(defun json-read-event (parser event value)
+  "One event, and everything nested inside it, as a Lisp value."
+  (ecase event
+    (:value (json-scalar value))
+    (:begin-object
+     (let ((plist '()))
+       (loop
+         (multiple-value-bind (event value) (com.inuoe.jzon:parse-next parser)
+           (case event
+             (:object-key
+              (push (json-key value) plist)
+              (multiple-value-bind (event value) (com.inuoe.jzon:parse-next parser)
+                (push (json-read-event parser event value) plist)))
+             (:end-object (return (nreverse plist)))
+             (t (error 'json-error :message "malformed object")))))))
+    (:begin-array
+     (let ((items '()))
+       (loop
+         (multiple-value-bind (event value) (com.inuoe.jzon:parse-next parser)
+           (case event
+             (:end-array (return (nreverse items)))
+             ((nil) (error 'json-error :message "unterminated array"))
+             (t (push (json-read-event parser event value) items)))))))))
 
 (defun parse-json (text)
-  "TEXT as Lisp data.  Signals JSON-ERROR, with the character position, rather
-than returning something plausible: a shell that silently accepted truncated
-JSON would give wrong answers instead of no answer."
-  (let ((c (make-json-cursor :text (coerce text 'simple-string))))
-    (prog1 (json-read-value c)
-      (jc-skip-space c)
-      (when (jc-peek c)
-        (jc-fail c "trailing content after the value")))))
+  "TEXT as Lisp data: objects become plists with keyword keys, arrays lists.
 
-;;; ------------------------------------------------------------------ stage
+Signals JSON-ERROR rather than returning something plausible -- a shell that
+quietly accepted truncated JSON would give wrong answers instead of no answer.
+jzon's own message carries the line and column, and is kept verbatim."
+  (handler-case
+      (com.inuoe.jzon:with-parser (parser text)
+        (multiple-value-bind (event value) (com.inuoe.jzon:parse-next parser)
+          (unless event
+            (error 'json-error :message "no JSON value in the input"))
+          (prog1 (json-read-event parser event value)
+            ;; jzon stops at the end of the first value; anything after it means
+            ;; the document was not one value.
+            (when (com.inuoe.jzon:parse-next parser)
+              (error 'json-error :message "trailing content after the value")))))
+    (json-error (c) (error c))
+    (error (c) (error 'json-error :message (princ-to-string c)))))
+
+;;; ------------------------------------------------------------------ writing
+
+(defun plistp (object)
+  "A plist as this file makes them: a cons whose first element is a keyword.
+An array of anything never looks like that, since only object keys become
+keywords -- which is what lets one function tell a parsed object from a parsed
+array without tagging either."
+  (and (consp object) (keywordp (first object))))
+
+(defun jsonable (object)
+  "OBJECT as something jzon can write: hash tables for objects, vectors for
+arrays, scalars for everything else.
+
+Driven by FIELDS and FIELD, which every plumb object already answers, so this
+serialises a FILE-ENTRY, a PROCESS, a COMMIT or a BLOCK-DEVICE without any of
+them knowing about JSON -- the same reason TABLE works on all of them, and the
+reason a type you add later needs no work here.
+
+NIL becomes null.  It is also how false and the empty list arrive, so a document
+that goes out and comes back is not always identical: the writer is lossy in
+exactly the place the reader is, and for the same reason."
+  (typecase object
+    (null 'null)
+    ((eql t) t)
+    ((or string real) object)
+    (symbol (string-downcase (symbol-name object)))
+    (pathname (sb-ext:native-namestring object))
+    ;; A condition is what rides the :ERR port and sits in DIGEST's .error;
+    ;; its report is the only useful rendering.
+    (condition (princ-to-string object))
+    (hash-table object)
+    (cons (if (plistp object)
+              (let ((table (make-hash-table :test #'equal)))
+                (loop for (key value) on object by #'cddr
+                      do (setf (gethash (string-downcase (string key)) table)
+                               (jsonable value)))
+                table)
+              (map 'vector #'jsonable object)))
+    (vector (map 'vector #'jsonable object))
+    (t (let ((keys (fields object)))
+         (if keys
+             (let ((table (make-hash-table :test #'equal)))
+               (dolist (key keys table)
+                 (setf (gethash (string-downcase (string key)) table)
+                       (jsonable (field object key)))))
+             (present object))))))
+
+(defun to-json-string (object &key pretty)
+  "OBJECT as a JSON document."
+  (com.inuoe.jzon:stringify (jsonable object) :pretty pretty))
+
+;;; ------------------------------------------------------------------ stages
 
 (defun json-text-of (object)
   "The text carried by whatever arrived: LINEs from SH, or plain strings."
@@ -262,16 +162,13 @@ A top-level ARRAY is spread -- one object per element, which is what every
 emitted as the single value it is.
 
 Objects become plists with upcased keyword keys, so .name reaches a key spelled
-name, Name or NAME, and TABLE can list the columns.  true is T; false and null
-are both NIL, deliberately: `where {.draft}` should work, and a missing key
-already reads as NIL through FIELD.
-
-Integers stay exact rather than becoming doubles -- a 64-bit id would silently
-lose its low bits, and these documents are full of ids.
+name, Name or NAME, and TABLE lists the columns in document order.  true is T;
+false and null are both NIL, deliberately: `where {.draft}` should work, and a
+missing key already reads as NIL through FIELD.
 
 By default the whole input is one document, so this is a barrier.  :LINES parses
-each input line as its own document instead, which is JSON Lines -- what log
-pipelines and `docker ps --format json` emit -- and streams."
+each input line as its own document instead -- JSON Lines, what log pipelines
+and `docker ps --format json` emit -- and streams."
   (:consumes :objects) (:produces :objects) (:barrier t)
   (if lines
       (do-input (x)
@@ -284,11 +181,33 @@ pipelines and `docker ps --format json` emit -- and streams."
                                  (get-output-stream-string buffer))))
           (unless (string= text "")
             (let ((value (parse-json text)))
-              (if (listp value)
-                  ;; A JSON array is a list, and so is an object -- but an
-                  ;; object is a plist whose first element is a keyword, which
-                  ;; an array of objects never is.
-                  (if (and value (keywordp (first value)))
-                      (emit value)
-                      (dolist (item value) (emit item)))
+              (if (and (listp value) (not (plistp value)))
+                  (dolist (item value) (emit item))
                   (emit value))))))))
+
+(defstage to-json (&key (lines nil) (pretty nil))
+  "Render the stream as JSON text -- the other half of FROM-JSON.
+
+  ls \"src/*.lisp\" | to-json > files.json
+  ps | where {(> .rss 500mb)} | to-json :pretty
+  disks | to-json :lines | to-sh \"jq -r .name\"
+
+By default the whole stream is ONE JSON array, which is what a document wants
+and what every --json reader expects, so it is a barrier.  :LINES writes one
+document per object instead -- JSON Lines -- and streams.
+
+Any plumb object serialises, because this is driven by FIELDS and FIELD rather
+than by knowing the types: a FILE-ENTRY, a PROCESS, a COMMIT and a BLOCK-DEVICE
+all work, and so does anything you define later.  Field names are lowercased,
+keywords become strings, pathnames their namestrings, and a condition its
+report.
+
+Produces :BYTES like TO-TEXT, so it composes with TO-FILE and TO-SH rather than
+ending the pipeline itself."
+  (:consumes :objects) (:produces :bytes) (:barrier t)
+  (if lines
+      (do-input (x) (emit (to-json-string x :pretty pretty)))
+      (let ((rows (make-array 16 :adjustable t :fill-pointer 0)))
+        (do-input (x) (vector-push-extend (jsonable x) rows))
+        (emit (com.inuoe.jzon:stringify (coerce rows 'simple-vector)
+                                        :pretty pretty)))))
