@@ -11,11 +11,18 @@
   (map nil (lambda (x) (emit x)) items))
 
 (defstage counter (&key (from 0) (by 1) limit)
-  "Emit integers forever (or until LIMIT).  Useful for proving that a
-downstream TAKE really does tear the source down."
+  "Emit integers forever, or LIMIT of them.  Useful for proving that a
+downstream TAKE really does tear the source down.
+
+LIMIT is a COUNT, which is what the name says.  It used to be an exclusive
+bound on the VALUE, and the two agree for `counter :limit 5` -- five integers,
+0 to 4 -- which is why nothing noticed.  They part company the moment FROM or BY
+is given: `counter :from 5 :limit 3` emitted NOTHING, because 5 is not below 3.
+Silence rather than an error, for a stage whose whole job is to produce."
   (:consumes nil) (:produces :objects)
   (loop for i = from then (+ i by)
-        while (or (null limit) (< i limit))
+        for emitted from 0
+        while (or (null limit) (< emitted limit))
         do (emit i)))
 
 (defstruct file-entry
@@ -231,9 +238,18 @@ guarantee is FN's, not this stage's, and output arrives in completion order."
   (do-input (x)
     (if (plusp n) (decf n) (emit x))))
 
-(defstage uniq (&key (test #'eql) key)
-  "Pass an object only the first time its KEY is seen.  TEST defaults to EQL,
-so string keys want :TEST #'EQUAL."
+(defstage uniq (&key (test #'equal) key)
+  "Pass an object only the first time its KEY is seen.
+
+TEST is EQUAL, not EQL.  Under EQL two equal STRINGS are different objects, so
+`ls | uniq :key .name` quietly kept every duplicate -- a wrong answer with no
+error, and .name is the most obvious thing anyone would dedupe by.  Keywords
+and numbers behaved, which is exactly why it survived: it looked right on
+everything except the common case.
+
+EQUAL is a superset for these purposes -- it compares numbers as EQL does and
+falls back to EQ for structs -- so nothing that worked before behaves
+differently.  Pass :TEST #\'EQ for identity, or #\'EQUALP to ignore case."
   (:consumes :objects) (:produces :objects)
   (let ((seen '()) (key (if key (ensure-fn key) #'identity)))
     (do-input (x)

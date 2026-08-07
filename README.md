@@ -9,7 +9,7 @@ binary builds with all of them**, so `plumb` on your PATH has everything.
 
 ```lisp
 (asdf:load-system "plumb")     ; core only -- nothing outside SBCL
-(asdf:test-system "plumb")     ; 491 assertions on macOS, 500 on Linux
+(asdf:test-system "plumb")     ; 513 assertions on macOS, 522 on Linux
 ```
 
 ```

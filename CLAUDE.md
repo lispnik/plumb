@@ -96,6 +96,14 @@ ocicl install                              ; restore ocicl/ after a fresh clone
   driver at runtime through `find-driver`, so depending on `dbi` alone gives a
   system that loads happily and fails on the first connection. It also brings
   the project's first *C* dependency, `libsqlite3` through CFFI.
+- **A default that is right for keywords and wrong for strings is the worst
+  kind.** `uniq` defaulted to `eql`, so `ls | uniq :key .name` silently kept
+  every duplicate -- while keywords, numbers and structs all behaved, which is
+  why it lasted. `counter`'s `:limit` bounded the *value* rather than counting
+  objects, so `counter :from 5 :limit 3` emitted nothing at all. Both were
+  documented rather than fixed; documenting a footgun is not removing one. When
+  a default is only right for the types you happened to test, change the
+  default.
 - **CSV values stay strings unless asked otherwise.** Guessing types is the bug
   every spreadsheet has: `01234` becomes 1234, `1.10` becomes 1.1, a padded id
   loses its padding. `from-csv :numbers` opts in, and even then converts only

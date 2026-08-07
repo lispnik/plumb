@@ -1950,6 +1950,60 @@ having no terminator but EOF.")
                  :cwd-matches-getcwd))))))
 
 
+
+(defun test-uniq-dedupes-strings ()
+  "UNIQ defaulted to EQL, under which two equal STRINGS are different objects --
+so `ls | uniq :key .name` quietly kept every duplicate.  A wrong answer with no
+error, on the field anyone would most obviously dedupe by."
+  (with-timeout (20 :uniq-strings)
+    (check (equal '("a" "b")
+                  (collect-pipeline (list (from-list (list "a" "b" "a" "b")) (uniq))))
+           :strings-dedupe)
+    (check (equal '("x.lisp")
+                  (collect-pipeline (list (from-list (list (list :name "x.lisp")
+                                                          (list :name "x.lisp")))
+                                          (uniq :key ($ (fld :name)))
+                                          (xform ($ (fld :name))))))
+           :string-keys-dedupe)
+    ;; Lists too, which EQL also never matched.
+    (check (= 1 (length (collect-pipeline
+                         (list (from-list (list (list 1 2) (list 1 2))) (uniq)))))
+           :equal-structures-dedupe)
+    ;; What already worked must keep working: EQUAL compares numbers as EQL
+    ;; does and falls back to EQ for structs, so it is a superset here.
+    (check (equal '(1 2) (collect-pipeline
+                          (list (from-list (list 1 2 1)) (uniq))))
+           :integers-still-dedupe)
+    (check (equal '(:a :b) (collect-pipeline
+                            (list (from-list (list :a :b :a)) (uniq))))
+           :keywords-still-dedupe)
+    (check (= 2 (length (collect-pipeline
+                         (list (from-list (list 1.5d0 1.5d0 2.5d0)) (uniq)))))
+           :doubles-still-dedupe)
+    ;; Identity is still reachable when that is what you meant.
+    (check (= 2 (length (collect-pipeline
+                         (list (from-list (list (copy-seq "a") (copy-seq "a")))
+                               (uniq :test #'eq)))))
+           :eq-is-still-available)))
+
+(defun test-counter-limit-is-a-count ()
+  "LIMIT counts objects, which is what the name says.  It used to bound the
+VALUE, and the two agree for `counter :limit 5` -- which is why nothing noticed
+until FROM or BY was given, and then it emitted NOTHING rather than erroring."
+  (with-timeout (20 :counter-limit)
+    (check (equal '(0 1 2 3 4) (collect-pipeline (list (counter :limit 5))))
+           :the-common-case-is-unchanged)
+    (check (equal '(5 6 7) (collect-pipeline (list (counter :from 5 :limit 3))))
+           :from-plus-limit-emits-that-many)
+    (check (equal '(0 2 4) (collect-pipeline (list (counter :by 2 :limit 3))))
+           :by-plus-limit-emits-that-many)
+    (check (equal '(10 8 6) (collect-pipeline (list (counter :from 10 :by -2 :limit 3))))
+           :counting-down-works-at-all)
+    (check (null (collect-pipeline (list (counter :limit 0)))) :zero-emits-nothing)
+    ;; Still infinite without one, which is what TAKE is demonstrated against.
+    (check (= 4 (length (collect-pipeline (list (counter) (take 4)))))
+           :no-limit-is-still-endless)))
+
 ;;; --------------------------------------------------------------------- help
 
 (defun stage-named (name) (gethash name plumb::*stages*))
@@ -2129,6 +2183,8 @@ having no terminator but EOF.")
                   test-git-outside-a-repository-is-a-clear-error
                   test-lsof-field-format-state-machine
                   test-handles-on-our-own-process
+                  test-uniq-dedupes-strings
+                  test-counter-limit-is-a-count
                   test-help-registry
                   test-help-listing
                   test-help-detail
