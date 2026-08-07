@@ -23,10 +23,16 @@ SOURCES := plumb.asd build.lisp $(wildcard src/*.lisp)
 # missing transitive dependency out of a neighbouring project under the user's
 # own (:tree "~/Projects/common-lisp/") -- Ironclad the first time, cl-ppcre the
 # second.  `make check-vendored` proves the tree stands alone.
-REGISTRY := (asdf:initialize-source-registry (quote (:source-registry (:directory "$(ROOT)") (:tree "$(ROOT)ocicl/") :inherit-configuration)))
+# ARP-SCAN is a sibling checkout, not a vendored library: it is under active
+# development, so a pinned copy here would mean maintaining two.  Named
+# explicitly rather than left to the user's own source registry, so the one
+# unvendored dependency is visible -- CHECK-VENDORED excludes plumb/arp for
+# exactly this reason.
+ARPSCAN  ?= $(HOME)/Projects/common-lisp/arp-scan/
+REGISTRY := (asdf:initialize-source-registry (quote (:source-registry (:directory "$(ROOT)") (:tree "$(ROOT)ocicl/") (:directory "$(ARPSCAN)") (:tree "$(ARPSCAN)ocicl/") :inherit-configuration)))
 LISP     := $(SBCL) --noinform --non-interactive --no-userinit --eval "(require :asdf)" --eval '$(REGISTRY)'
 
-.PHONY: all build test test-crypto test-json test-csv test-sql check-vendored demo repl clean help deps
+.PHONY: all build test test-crypto test-json test-csv test-sql test-arp check-vendored demo repl clean help deps
 
 # The optional systems need the vendored tree.  ocicl.csv is committed and
 # ocicl/ is not, so a fresh clone has to restore it -- and should be told so
@@ -54,7 +60,7 @@ build: $(BIN)
 $(BIN): $(SOURCES) | deps
 	@mkdir -p $(dir $(BIN))
 	@rm -f $(BIN)
-	@$(SBCL) --script build.lisp
+	@PLUMB_ARPSCAN=$(ARPSCAN) $(SBCL) --script build.lisp
 	@echo "built $(BIN) ($$(du -h $(BIN) | cut -f1)) -- $$($(BIN) --version)"
 
 test: | deps
@@ -71,6 +77,9 @@ test-csv: | deps
 
 test-sql: | deps
 	@$(LISP) --eval '(asdf:test-system "plumb/sql")'
+
+test-arp: | deps
+	@$(LISP) --eval '(asdf:test-system "plumb/arp")'
 
 # Loads every optional system with the user's own registry switched OFF, so a
 # dependency that is only satisfied by some other checkout on this machine
@@ -102,6 +111,7 @@ help:
 	@echo "make test-json    run the JSON tests"
 	@echo "make test-csv     run the CSV tests"
 	@echo "make test-sql     run the SQL tests"
+	@echo "make test-arp     run the ARP tests (needs the arp-scan checkout)"
 	@echo "make check-vendored  prove ocicl/ stands alone, with no inherited registry"
 	@echo "make demo    sbcl --script demo.lisp"
 	@echo "make repl    interactive plumb prompt, no binary needed"

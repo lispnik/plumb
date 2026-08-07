@@ -33,7 +33,8 @@ identical to one that has them."
                         (list (when (gethash 'plumb::digest plumb:*stages*) "+crypto")
                               (when (gethash 'plumb::from-json plumb:*stages*) "+json")
                               (when (gethash 'plumb::from-csv plumb:*stages*) "+csv")
-                              (when (gethash 'plumb::from-sql plumb:*stages*) "+sql")))))
+                              (when (gethash 'plumb::from-sql plumb:*stages*) "+sql")
+                              (when (gethash 'plumb::hosts plumb:*stages*) "+arp")))))
     (format nil "plumb ~a~@[ (~{~a~^ ~})~]" *version* extras)))
 
 (defvar *eof* (list :eof) "Unique marker; NIL and :EOF are both legal forms.")

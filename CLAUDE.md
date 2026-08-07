@@ -5,15 +5,15 @@
 `plumb` — an experiment in shell pipelines built from threads and channels
 carrying Lisp objects, instead of processes and byte streams. The **core** is
 SBCL only -- no external libraries -- and every dependency lives in an optional
-system: `plumb/json` (jzon), `plumb/csv` (cl-csv), `plumb/sql` (cl-dbi) and
-`plumb/crypto` (Ironclad).
+system: `plumb/json` (jzon), `plumb/csv` (cl-csv), `plumb/sql` (cl-dbi),
+`plumb/crypto` (Ironclad) and `plumb/arp` (the sibling arp-scan checkout).
 The **binary** builds with all of them, so `plumb` on your PATH has everything while
 `asdf:load-system "plumb"` and `make test` need nothing outside SBCL.
 
 ```
 sbcl --eval '(asdf:test-system "plumb")'   ; 491 assertions, core only
 make                                       ; dump bin/plumb, with every system
-make test-json test-csv test-sql test-crypto  ; 60, 35, 29, 79 -- optional systems
+make test-json test-csv test-sql test-arp test-crypto  ; the optional systems
 sbcl --script demo.lisp
 ocicl install                              ; restore ocicl/ after a fresh clone
 ```
@@ -96,6 +96,31 @@ ocicl install                              ; restore ocicl/ after a fresh clone
   driver at runtime through `find-driver`, so depending on `dbi` alone gives a
   system that loads happily and fails on the first connection. It also brings
   the project's first *C* dependency, `libsqlite3` through CFFI.
+- **`plumb/arp` is the one dependency that is not vendored**, because `arp-scan`
+  is a sibling checkout under active development and pinning a copy would mean
+  maintaining two. It is therefore named *explicitly* -- `ARPSCAN` in the
+  Makefile, `PLUMB_ARPSCAN` for `build.lisp` -- rather than left to the user's
+  own `(:tree "~/Projects/common-lisp/")`, which is precisely how Ironclad,
+  `cl-ppcre` and `dbi` each came to build here and nowhere else.
+  `check-vendored` excludes it by design, and a missing checkout gives a binary
+  *without* `hosts` rather than a failed build, which `--version` reports.
+- **`arp-scan:scan` is the command; `scan-hosts` is the library.** `scan`
+  formats, streams, may consult a baseline and can exit the process, and it
+  returns only `(ip . mac)` -- discarding the vendor, rtt, fingerprint and
+  timestamps it collected anyway. `scan-hosts` was added there to hand the
+  records back. A wrapper around something that prints is not an API.
+- **The same network looks different from two machines, and both are right.**
+  Scanning the same LAN from a Wi-Fi Mac and a wired Pi returned different MACs
+  for the same IPs -- `02:0F:B5:09:26:56` against `C8:10:2F:09:26:56`, the low
+  three octets identical. Not a bug in either: the Mac reaches those hosts
+  through a NETGEAR extender, which rewrites relayed MACs with the
+  locally-administered bit set. macOS's own `arp -a` agreed with what the scan
+  reported. Worth remembering before treating a MAC as an identity, and a good
+  reason `.alt-macs` exists.
+- **Scanning needs root; listing interfaces does not.** That asymmetry decides
+  what the suite can test: `interfaces` is exercised for real, and `hosts` is
+  tested only through its *conversion*, against records built by hand. A test
+  that depends on which machines happen to be switched on is not a test.
 - **A default that is right for keywords and wrong for strings is the worst
   kind.** `uniq` defaulted to `eql`, so `ls | uniq :key .name` silently kept
   every duplicate -- while keywords, numbers and structs all behaved, which is

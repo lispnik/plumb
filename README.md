@@ -652,6 +652,38 @@ each column from what it actually holds. Columns are the union of `fields`
 across rows, so a row missing one gets NULL rather than a shifted insert, and
 everything goes in one transaction.
 
+### hosts / interfaces
+
+The local network, from the sibling [arp-scan](../arp-scan) project:
+
+```
+$ plumb 'interfaces | where {(and .ip (not .loopback))} | table'
+$ plumb 'hosts | sort-by .ip | table :columns (list :ip :mac :vendor :rtt)'
+$ plumb 'hosts | tally :key .vendor | sort-by .count :desc | table'
+```
+
+```
+ip              mac                vendor                    rtt
+192.168.50.1    CC:28:AA:41:26:38  ASUSTek COMPUTER INC.     0.0067d0
+192.168.50.116  DC:A6:32:BE:45:CE  Raspberry Pi Trading Ltd  0.1440d0
+```
+
+Same argument as `ps`: arp-scan already does the hard part — libpcap, the ARP
+frames, the OUI database — and plumb's contribution is that a host arrives as an
+object, so `where` and `sort-by` replace whatever selection flags the command
+would otherwise grow.
+
+**`hosts` needs root** (raw packet access) and takes seconds by nature — requests
+go out across the range, then there is a listen window. `interfaces` needs
+neither. `:passive` listens without transmitting anything at all, which is the
+polite option on a network you do not own.
+
+This is the **one dependency that is not vendored**: `arp-scan` is a sibling
+checkout under active development, so a pinned copy would mean maintaining two.
+Its path is named explicitly (`ARPSCAN` in the Makefile) rather than left to
+your ASDF registry, and a missing checkout gives a binary without `hosts` rather
+than a failed build.
+
 ## disks
 
 Block devices as objects — every disk, partition and volume, mounted or not:
@@ -984,6 +1016,7 @@ make                   # bin/plumb, with plumb/json and plumb/crypto in it
 make test-json         # 60 assertions
 make test-csv          # 35 assertions
 make test-sql          # 29 assertions
+make test-arp          # 42 assertions (needs the arp-scan checkout)
 make test-crypto       # 79 assertions
 plumb --version        # plumb 0.1.0 (+crypto +json +csv +sql)
 ```

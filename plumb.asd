@@ -57,6 +57,32 @@
 ;;; "plumb"` and `make test` need nothing outside SBCL -- but the BINARY builds
 ;;; with all of them, so a `plumb` on your path has everything.
 
+(defsystem "plumb/arp"
+  :description "Local-network hosts and interfaces for plumb, on the arp-scan project."
+  :author "Matthew"
+  :license "MIT"
+  :version "0.1.0"
+  ;; The one dependency that is NOT vendored under ocicl/: arp-scan is a
+  ;; sibling checkout under active development, so pinning a copy of it here
+  ;; would mean maintaining two.  The Makefile names its path explicitly, so
+  ;; this is a stated exception rather than something ASDF happens to find on
+  ;; the user's source registry -- which is how Ironclad, cl-ppcre and dbi each
+  ;; came to build here and nowhere else.
+  :depends-on ("plumb" "arp-scan")
+  :serial t
+  :components ((:module "src" :components ((:file "arp"))))
+  :in-order-to ((test-op (test-op "plumb/arp/tests"))))
+
+(defsystem "plumb/arp/tests"
+  :description "Test suite for the ARP stages."
+  :depends-on ("plumb/arp" "plumb/tests")
+  :serial t
+  :pathname "tests"
+  :components ((:file "arp"))
+  :perform (test-op (o c)
+             (unless (uiop:symbol-call :plumb/tests '#:run-arp-tests)
+               (error "plumb/arp test suite failed."))))
+
 (defsystem "plumb/sql"
   :description "SQL reading and writing for plumb, on cl-dbi."
   :author "Matthew"
