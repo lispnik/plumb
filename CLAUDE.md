@@ -423,7 +423,11 @@ ocicl install                              ; restore ocicl/ after a fresh clone
 
 - `defstage` declares `(:consumes X) (:produces X)` right after the docstring,
   and `(:barrier t)` if it emits nothing until its input EOFs -- `explain`
-  shows that, and it cannot be derived from the type signature.
+  shows that, and it cannot be derived from the type signature. `(:helpers N)`
+  is the same idea for threads the stage starts *itself*: `explain` counted
+  `workers` alone and so reported three threads for a pipeline running four.
+  Only `sh-filter` declares any, and like `:parallel` it is a claim the author
+  makes, because nothing about a thunk reveals it.
 - `emit` and `finish` are macros — never `#'emit`.
 - `do-input` declares its variable `ignorable`; don't add `(declare (ignore ...))`
   inside the body, it isn't a valid declaration position there.

@@ -25,6 +25,11 @@
   ;; and "is" are different facts and EXPLAIN wants to show both.
   (parallel nil)
   (workers 1 :type (integer 1))
+  ;; Threads the stage runs ITSELF, beyond the WORKERS copies RUN spawns.  Only
+  ;; SH-FILTER has any, and it is declared rather than inferred for the same
+  ;; reason PARALLEL is: nothing about a thunk reveals it.  EXPLAIN counted
+  ;; WORKERS alone and so reported three threads for a pipeline running four.
+  (helpers 0 :type (integer 0))
   (args '()))
 
 (defmethod print-object ((s stage) stream)
@@ -84,12 +89,12 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
 
 (defun %parse-stage-body (body)
   (let ((consumes t) (produces t) (ports '(:out :err)) (port-types '())
-        (barrier nil) (parallel nil) (doc nil) (checks '()))
+        (barrier nil) (parallel nil) (helpers 0) (doc nil) (checks '()))
     (when (and (stringp (car body)) (cdr body))
       (setf doc (pop body)))
     (loop while (and (consp (car body))
                      (member (caar body)
-                             '(:consumes :produces :ports :barrier :parallel :check)))
+                             '(:consumes :produces :ports :barrier :parallel :helpers :check)))
           for form = (pop body)
           do (ecase (first form)
                (:consumes (setf consumes (second form)))
@@ -103,6 +108,11 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
                ;; Those failures are silent, so the declaration is a claim the
                ;; stage's author makes, not something DEFSTAGE works out.
                (:parallel (setf parallel (second form)))
+               ;; How many threads the stage starts on its own.  A stage
+               ;; contains no concurrency, with the one exception documented in
+               ;; src/process.lisp, and this is how the exception tells EXPLAIN
+               ;; the truth instead of EXPLAIN knowing which stage it is.
+               (:helpers (setf helpers (second form)))
                ;; Validation that runs in the CONSTRUCTOR, not the thunk -- the
                ;; same reason CHECK-PIPELINE runs before a thread exists.  A
                ;; (NAME TYPE) parameter already gets a CHECK-TYPE; this is for
@@ -123,7 +133,8 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
                         ports
                         (union (mapcar (lambda (s) (if (consp s) (first s) s)) specs)
                                '(:out :err)))))))
-    (values consumes produces ports port-types barrier parallel doc checks body)))
+    (values consumes produces ports port-types barrier parallel helpers doc checks
+            body)))
 
 ;;; The registry behind HELP.  DEFSTAGE knows the type signature and the
 ;;; docstring at definition time; a STAGE instance only exists once someone has
@@ -133,7 +144,8 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
   "Stage name -> STAGE-INFO, for HELP.  Populated by DEFSTAGE.")
 
 (defstruct (stage-info (:conc-name si-) (:copier nil))
-  name lambda-list consumes produces ports port-types barrier parallel documentation)
+  name lambda-list consumes produces ports port-types barrier parallel helpers
+  documentation)
 
 (defun stage-kind (info)
   (cond ((null (si-consumes info)) :source)
@@ -144,8 +156,8 @@ propagates CHANNEL-CLOSED backwards through the pipeline."
   "Define a stage constructor.  Calling it returns a STAGE; running a pipeline
 is what actually spawns a thread."
   (multiple-value-bind (required rest-of-lambda-list) (%split-arglist arglist)
-    (multiple-value-bind (consumes produces ports port-types barrier parallel doc
-                          constructor-checks real-body)
+    (multiple-value-bind (consumes produces ports port-types barrier parallel helpers
+                          doc constructor-checks real-body)
         (%parse-stage-body body)
       (let* ((req-names (mapcar (lambda (p) (if (consp p) (first p) p)) required))
              (checks (loop for p in required
@@ -176,6 +188,7 @@ is what actually spawns a thread."
                                   :port-types ',port-types
                                   :barrier ,barrier
                                   :parallel ,parallel
+                                  :helpers ,helpers
                                   :documentation ,doc))
            (defun ,name (,@req-names ,@tail)
              ,@(when doc (list doc))
@@ -190,6 +203,7 @@ is what actually spawns a thread."
                          :port-types ',port-types
                          :barrier ,barrier
                          :parallel ,parallel
+                         :helpers ,helpers
                          :workers ,(if parallel 'workers 1)
                          :args (list ,@(loop for n in all-names
                                              append (list (intern (string n) :keyword) n)))

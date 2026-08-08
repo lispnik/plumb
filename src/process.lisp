@@ -31,6 +31,24 @@
 (defconstant +sigterm+ 15
   "Core PLUMB does not depend on sb-posix, so the number is spelled out.")
 
+(defparameter *feeder-grace* 5
+  "Seconds the stage waits for its feeder once the child has been dealt with.
+Everything the teardown does makes the feeder terminate; this bounds the case
+where it does not -- a child ignoring SIGTERM -- so one stage hangs rather than
+the whole pipeline.
+
+A parameter rather than a constant so the suite can shorten it.  Note that it
+is read on the STAGE thread, which does not inherit a caller's rebinding: a
+test has to SETF it, not LET it.")
+
+(define-condition feeder-abandoned (error)
+  ((command :initarg :command :reader feeder-abandoned-command))
+  (:report
+   (lambda (c s)
+     (format s "the feeder for ~s did not stop within ~d seconds and was abandoned; ~
+its input may not have reached the command in full"
+             (feeder-abandoned-command c) *feeder-grace*))))
+
 (define-condition command-failed (error)
   ((command   :initarg :command   :reader command-failed-command)
    (exit-code :initarg :exit-code :reader command-failed-exit-code)
@@ -243,7 +261,7 @@ neither stream.
 
 A non-zero exit signals COMMAND-FAILED unless ON-EXIT is :IGNORE, and STDERR is
 :CAPTURE or :INHERIT, both as for SH."
-  (:consumes t) (:produces :objects)
+  (:consumes t) (:produces :objects) (:helpers 1)
   (let ((label (%command-label command))
         (input *input*)
         (as (if as (ensure-fn as) #'present)))
@@ -270,10 +288,6 @@ A non-zero exit signals COMMAND-FAILED unless ON-EXIT is :IGNORE, and STDERR is
           ;; to SEND, sees the closed channel and unwinds.  SPAWN-STAGE's own
           ;; CLOSE-INPUT still runs afterwards and is idempotent with this.
           (abort-input input)
-          ;; Everything above makes the feeder terminate; the timeout is for
-          ;; the child that ignores SIGTERM, which would otherwise hang the
-          ;; whole pipeline here rather than just itself.
-          ;;
           ;; AWAIT returns what the feeder died of, and re-signalling it HERE is
           ;; what puts a helper thread's failure back under the ordinary rules:
           ;; SPAWN-STAGE's handler records it on the pipeline and sends it out
@@ -281,9 +295,15 @@ A non-zero exit signals COMMAND-FAILED unless ON-EXIT is :IGNORE, and STDERR is
           ;; Only on the drained path -- once downstream has gone the stage is
           ;; already unwinding with a condition of its own, and a feeder that
           ;; lost its pipe on the way out has nothing to add.
-          (let ((failure (await feeder :timeout 5)))
-            (when (and failure drained)
-              (error failure))))))))
+          (let ((failure (await feeder :timeout *feeder-grace*)))
+            (when drained
+              (cond (failure (error failure))
+                    ;; Still running after the grace period.  It used to just
+                    ;; fall through here, so a child ignoring SIGTERM produced a
+                    ;; five-second stall, possibly a truncated stream into the
+                    ;; command, and not one word about either.
+                    ((task-live-p feeder)
+                     (error 'feeder-abandoned :command label))))))))))
 
 ;;; ------------------------------------------------------------------- ps
 ;;;

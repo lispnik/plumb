@@ -82,7 +82,13 @@ PORTS is RUN's port plist, so a graph draws as the graph it is.  No values."
                                n (1- n)
                                ;; Threads, not stages: a stage with :WORKERS 8
                                ;; is eight of them sharing one input channel.
-                               (reduce #'+ stages :key #'stage-workers)
+                               ;; HELPERS are the ones a stage starts itself --
+                               ;; only SH-FILTER's feeder, and counting WORKERS
+                               ;; alone reported three threads for a pipeline
+                               ;; that was running four.
+                               (reduce #'+ stages
+                                       :key (lambda (s)
+                                              (+ (stage-workers s) (stage-helpers s))))
                                (when (plusp branch-count) branch-count))
                        :bold)))
       (loop for stage in stages
@@ -99,6 +105,11 @@ PORTS is RUN's port plist, so a graph draws as the graph it is.  No values."
                (when (stage-barrier stage)
                  (format stream "  ~a~%"
                          (paint "    ⋯ barrier: emits nothing until its input ends"
+                                :yellow)))
+               (when (plusp (stage-helpers stage))
+                 (format stream "  ~a~%"
+                         (paint (format nil "    + ~d helper thread~:p inside the stage, not spawned by RUN"
+                                        (stage-helpers stage))
                                 :yellow)))
                (when (> (stage-workers stage) 1)
                  (format stream "  ~a~%"

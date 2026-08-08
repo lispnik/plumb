@@ -1303,6 +1303,39 @@ must NOT be, or every bounded filter would report a spurious failure."
       (join pipe)
       (check (null (pipeline-failures pipe)) :take-path-reports-no-failure))))
 
+(defun test-sh-filter-declares-its-helper-thread ()
+  "EXPLAIN drew the threads RUN spawns, so a filtered pipeline running four
+reported three.  The stage declares (:HELPERS 1) rather than EXPLAIN knowing
+which stage it is -- the same reason :PARALLEL is a declaration."
+  (with-timeout (10 :explain-helpers)
+    (check (= 1 (plumb::stage-helpers (sh-filter "cat"))) :the-stage-declares-it)
+    (check (zerop (plumb::stage-helpers (take 1))) :ordinary-stages-declare-none)
+    (let ((text (with-output-to-string (s)
+                  (explain (list (from-list '("a")) (sh-filter "cat") (take 1))
+                           :stream s))))
+      (check (search "4 threads" text) :the-feeder-is-counted)
+      (check (search "helper thread" text) :and-named-against-its-stage))))
+
+(defun test-sh-filter-abandoned-feeder-is-reported ()
+  "A feeder still running after the grace period used to be passed over in
+silence.  Reproduced rather than mocked: the child exits at once, so the stage
+drains and stops, while the source holds the input channel open with nothing on
+it -- leaving the feeder parked in RECV, which ABORT-INPUT cannot reach because
+the source is blocked on a read() rather than on a SEND."
+  (with-timeout (30 :sh-filter-abandoned)
+    ;; SETF, not LET: this is read on the stage thread, which does not inherit
+    ;; a binding made here.
+    (let ((previous plumb::*feeder-grace*))
+      (unwind-protect
+           (progn
+             (setf plumb::*feeder-grace* 1)
+             (let* ((pipe (run (list (sh "sleep 3") (sh-filter "true"))))
+                    (failures (progn (join pipe) (pipeline-failures pipe)))
+                    (failure (cdr (assoc 'sh-filter failures))))
+               (check (typep failure 'feeder-abandoned) :abandoned-feeder-is-reported)
+               (check (search "true" (princ-to-string failure)) :and-names-the-command)))
+        (setf plumb::*feeder-grace* previous)))))
+
 (defun test-sh-filter-exit-status ()
   (with-timeout (15 :sh-filter-exit)
     (let ((pipe (run (list (from-list '("x")) (sh-filter "cat >/dev/null; exit 3")))))
@@ -2372,6 +2405,8 @@ until FROM or BY was given, and then it emitted NOTHING rather than erroring."
                   test-sh-filter-survives-a-full-pipe
                   test-sh-filter-teardown
                   test-sh-filter-feeder-errors-are-not-swallowed
+                  test-sh-filter-declares-its-helper-thread
+                  test-sh-filter-abandoned-feeder-is-reported
                   test-sh-filter-exit-status
                   test-to-sh-sink
                   test-lines-still-works

@@ -33,7 +33,7 @@
    #:where #:xform #:take #:drop #:uniq #:sort-by #:tally #:accumulate
    #:peek #:to-text #:print-items #:table #:to-file #:from-file #:tee #:route
    ;; external processes
-   #:command-failed #:command-failed-command #:command-failed-exit-code
+   #:command-failed #:feeder-abandoned #:feeder-abandoned-command #:command-failed-command #:command-failed-exit-code
    #:command-failed-stderr #:emit-lines
    ;; help -- the registry's accessors stay internal; (help NAME) is the API
    #:help #:explain #:*stages* #:stage-info
