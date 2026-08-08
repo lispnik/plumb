@@ -1,0 +1,126 @@
+name: tests
+
+# Manual verification is what this project has always had, and it missed things
+# a machine would not: `make` silently built nothing for six commits because a
+# target was added above `all:`, and a dependency has resolved out of a
+# NEIGHBOURING checkout four separate times.  Both are caught here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The core is SBCL-only BY DESIGN -- no ocicl, no network, no vendored tree.
+  # This job installs nothing else, so if the core ever grows a dependency it
+  # fails here rather than on somebody's fresh clone.
+  #
+  # Both platforms, because they disagree exactly where this project lives:
+  # statx against struct stat, sysfs against diskutil, pipe buffers and SIGTERM
+  # timing.  The suites are not even the same size -- 561 assertions on macOS
+  # against 572 on Linux, some being platform-conditional.
+  core:
+    name: core / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SBCL
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then
+            brew install sbcl
+          else
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends sbcl
+          fi
+
+      - run: sbcl --version
+
+      # CL_SOURCE_REGISTRY is this directory and NOTHING else.  No trailing
+      # colon, which is what tells ASDF to inherit nothing -- the same
+      # discipline as `make check-vendored` and demo.lisp.
+      #
+      # A failing suite exits non-zero because plumb/tests' TEST-OP signals
+      # when RUN-TESTS returns NIL.  Verified by breaking a test on purpose and
+      # watching the status go to 1, rather than assumed.
+      - name: Core suite
+        env:
+          CL_SOURCE_REGISTRY: ${{ github.workspace }}
+        run: |
+          sbcl --non-interactive --no-userinit \
+               --eval '(require :asdf)' \
+               --eval '(asdf:test-system "plumb")'
+
+  # Everything the core job deliberately excludes: the vendored tree, the four
+  # optional systems that need it, the sibling arp-scan checkout, and the
+  # binary itself.
+  full:
+    name: optional systems + binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out plumb
+        uses: actions/checkout@v4
+        with:
+          path: plumb
+
+      # plumb/arp is the one dependency that is not vendored, because arp-scan
+      # is a sibling checkout under active development.  The Makefile takes
+      # ARPSCAN, so CI names it explicitly the way a developer's environment
+      # does -- rather than leaving it to whatever ASDF happens to find, which
+      # is the trap this project keeps hitting.
+      - name: Check out the sibling arp-scan
+        uses: actions/checkout@v4
+        with:
+          repository: lispnik/arp-scan
+          path: arp-scan
+
+      - name: Install SBCL and ocicl
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends sbcl libsqlite3-0
+          brew install ocicl
+          ocicl version
+
+      # ocicl.csv is committed and ocicl/ is not, so this restores an exact
+      # tree.  It is the only step here that needs the network.
+      - name: Restore the vendored tree
+        working-directory: plumb
+        run: ocicl install
+
+      - name: Optional test systems
+        working-directory: plumb
+        env:
+          ARPSCAN: ${{ github.workspace }}/arp-scan/
+        run: make test-json test-csv test-sql test-crypto test-arp
+
+      # The check that has earned its place four times over: load every
+      # optional system with the inherited registry switched OFF, so a
+      # dependency satisfied out of a neighbouring project is a failure here
+      # instead of a surprise on another machine.
+      - name: Vendored tree is self-contained
+        working-directory: plumb
+        run: make check-vendored
+
+      # `make` built nothing at all for six commits, silently and with status
+      # 0, because `deps:` sat above `all:` and took the default goal.  Running
+      # the binary is what turns that into a failure.
+      - name: Build the binary and run it
+        working-directory: plumb
+        env:
+          ARPSCAN: ${{ github.workspace }}/arp-scan/
+        run: |
+          make
+          test -x ./bin/plumb
+          ./bin/plumb --version
+          # Both commands were run against a real binary before being put here.
+          ./bin/plumb 'ls "src/*.lisp" | take 3 | print-items'
+          ./bin/plumb 'ls "src/*.lisp" | sh-filter "wc -l" | print-items'
