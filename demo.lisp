@@ -1,13 +1,39 @@
 ;;;; demo.lisp -- sbcl --script demo.lisp   (from this directory)
 
 (require :asdf)
+(defparameter *here* (directory-namestring *load-truename*))
+
 (asdf:initialize-source-registry
- `(:source-registry (:directory ,(directory-namestring *load-truename*))
-                    :inherit-configuration))
+ `(:source-registry (:directory ,*here*)
+                    (:tree ,(merge-pathnames "ocicl/" *here*))
+                    (:directory ,(merge-pathnames "../arp-scan/" *here*))
+                    (:tree ,(merge-pathnames "../arp-scan/ocicl/" *here*))
+                    ;; NOT :inherit-configuration.  Everything needed is named
+                    ;; above, and inheriting let this file quietly resolve jzon,
+                    ;; cl-csv and Ironclad out of a NEIGHBOURING project when
+                    ;; ocicl/ was missing -- so the "skipped cleanly" path could
+                    ;; not be tested, and a demo would appear to work on a
+                    ;; checkout where the build does not.
+                    :ignore-inherited-configuration))
+
 (handler-bind ((warning #'muffle-warning))
-  (asdf:load-system "plumb"))
+  (asdf:load-system "plumb")
+  ;; The optional systems, each skipped rather than fatal: this file is a
+  ;; demonstration, and it should still run most of itself on a checkout with
+  ;; no vendored tree or no sibling arp-scan.  It covered NONE of them until
+  ;; now, which meant `make demo` -- the only thing that exercises the real
+  ;; binary -- said nothing about half the surface.
+  (dolist (system '("plumb/json" "plumb/csv" "plumb/sql" "plumb/crypto" "plumb/arp"))
+    (handler-case (asdf:load-system system)
+      (error () (format t "~&; ~a unavailable -- skipping its section~%" system)))))
 
 (in-package #:plumb)
+
+;;; A glob is a STRING, never a pathname.  MERGE-PATHNAMES turns "src/a*.lisp"
+;;; into a pathname whose :NAME is a wild PATTERN object, and LS then cannot
+;;; take a native namestring of it -- see CLAUDE.md, "filenames are strings".
+(defparameter *root* (directory-namestring *load-truename*))
+(defun in-root (relative) (concatenate 'string *root* relative))
 
 (format t "~&== ls | where {(> .size 1kb)} | sort-by .size :desc | take 5~%")
 (each (list (ls (merge-pathnames "src/" *load-truename*))
@@ -87,3 +113,64 @@
             (take 4)
             (table :columns (list :name :size)))
       #'identity)
+
+;;; ------------------------------------------------------- the optional systems
+;;;
+;;; Each guarded on its stage being registered, so this file runs on a checkout
+;;; that has not vendored anything.
+
+(defun have (stage) (gethash stage *stages*))
+
+(when (have 'to-json)
+  (format t "~&~%== JSON: any object serialises, through FIELDS and FIELD~%")
+  (each (list (ls (in-root "src/a*.lisp"))
+              (xform ($ (list :name (fld :name) :size (fld :size))))
+              (to-json :pretty t))
+        (lambda (text) (format t "~a~%" text))))
+
+(when (have 'from-json)
+  (format t "~&~%== ...and back, with a top-level array spread into objects~%")
+  (each (list (from-list (list "[{\"host\":\"a\",\"up\":true},{\"host\":\"b\",\"up\":false}]"))
+              (from-json)
+              (where ($ (fld :up)))
+              (table :columns (list :host :up)))
+        #'identity))
+
+(when (have 'to-csv)
+  (format t "~&~%== CSV: quoting is the writer's job, and survives a round trip~%")
+  (each (list (from-list (list (list :name "has,comma" :n 1)
+                               (list :name "has\"quote" :n 2)))
+              (to-csv))
+        (lambda (line) (format t "  ~a~%" line))))
+
+(when (have 'digest)
+  (format t "~&~%== digests: one object per file, shasum(1)'s own line format~%")
+  (each (list (ls (in-root "src/a*.lisp"))
+              (digest :sha256))
+        (lambda (d) (format t "  ~a~%" (present d)))))
+
+(when (have 'to-sql)
+  (format t "~&~%== SQL: persist once, then let the engine do the aggregating~%")
+  (let ((db "/tmp/plumb-demo.db"))
+    (ignore-errors (delete-file db))
+    (join (run (list (ls (in-root "src/*.lisp"))
+                     (xform ($ (list :name (fld :name) :size (fld :size))))
+                     (to-sql "files" :database db :create t))))
+    (each (list (from-sql "select count(*) as files, sum(size) as bytes,
+                                  max(size) as largest from files where size > ?"
+                          :database db :params (list 1024))
+                (table))
+          #'identity)
+    (ignore-errors (delete-file db))))
+
+(when (have 'interfaces)
+  (format t "~&~%== the network: interfaces need no privileges (a scan needs root)~%")
+  (each (list (interfaces)
+              (where ($ (and (fld :ip) (not (fld :loopback)))))
+              (table :columns (list :name :ip :netmask :mac)))
+        #'identity))
+
+(format t "~&~%== every stage this binary has~%")
+(format t "  ~d stages: ~{~(~a~)~^ ~}~%"
+        (hash-table-count *stages*)
+        (sort (loop for k being the hash-keys of *stages* collect k) #'string<))
