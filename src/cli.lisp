@@ -262,6 +262,30 @@ HELP for free."
 
 ;;; ------------------------------------------------------------------ the REPL
 
+(defun continued-line-p (text)
+  "Does TEXT end in a way that asks for the next line?
+
+A trailing \\ is the shell's own convention, and a trailing | is what a
+pipeline being laid out over several lines looks like.  Neither can mean
+anything else at the end of a word-mode line: a bare word ending in a backslash
+is not a filename anyone types, and a pipeline ending in | has no last stage."
+  (let ((trimmed (string-right-trim '(#\Space #\Tab #\Return) text)))
+    (and (plusp (length trimmed))
+         (member (char trimmed (1- (length trimmed))) '(#\\ #\|)))))
+
+(defun splice-continuations (text)
+  "Join lines ending in a backslash, dropping the backslash.  A trailing | is
+left in place -- it is part of the pipeline, not punctuation about layout."
+  (with-output-to-string (out)
+    (let ((lines (plumb::split-lines text)))
+      (loop for (line . rest) on lines
+            for trimmed = (string-right-trim '(#\Space #\Tab #\Return) line)
+            do (cond ((and rest (plusp (length trimmed))
+                           (char= (char trimmed (1- (length trimmed))) #\\))
+                      (write-string (subseq trimmed 0 (1- (length trimmed))) out))
+                     (rest (write-string line out) (terpri out))
+                     (t (write-string line out)))))))
+
 (defun try-read (text)
   "Read every form in TEXT.  Returns (VALUES FORMS-OR-CONDITION STATUS), where
 STATUS is :OK, :INCOMPLETE (still unbalanced -- collect another line) or :ERROR.
@@ -269,8 +293,14 @@ READ-FROM-STRING draws exactly that line for us: hitting EOF inside an object
 signals, hitting it between objects does not.  A word-mode line is complete at
 the newline, but an unclosed { or ( inside one still asks for another line."
   (when (plumb:shell-syntax-p text)
+    ;; A line asking to be continued is INCOMPLETE even though it reads: `ls |`
+    ;; on its own is a valid one-stage pipeline, and evaluating it would run LS
+    ;; and then treat the next line as something new.  That is how `| xform ...`
+    ;; on a second line silently started a fresh pipeline.
+    (when (continued-line-p text)
+      (return-from try-read (values nil :incomplete)))
     (return-from try-read
-      (handler-case (values (list (plumb:read-shell text)) :ok)
+      (handler-case (values (list (plumb:read-shell (splice-continuations text))) :ok)
         (end-of-file () (values nil :incomplete))
         (error (c) (values c :error)))))
   (handler-case

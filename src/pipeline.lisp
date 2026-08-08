@@ -230,9 +230,16 @@ leave the other seven reading."
   (join pipeline)
   pipeline)
 
-(defun each (stages function &key (capacity *default-capacity*) errorp)
+(defun each (stages function &key (capacity *default-capacity*) (errorp t))
   "Run STAGES, calling FUNCTION on each object the last stage emits.
-The calling thread is the consumer, so backpressure reaches all the way back."
+The calling thread is the consumer, so backpressure reaches all the way back.
+
+Returns the PIPELINE, so the failures are readable either way.
+
+ERRORP defaults to T: a stage that dies should say so.  It used to default to
+NIL, which made a failed pipeline indistinguishable from an empty one -- the
+caller got NIL and no condition.  Pass :ERRORP NIL where a PARTIAL result is
+the point, as it is for a parallel stage whose workers can fail independently."
   (let* ((sink (make-channel :capacity capacity :name "each"))
          (pipe (run stages :sink sink :capacity capacity)))
     (unwind-protect
@@ -243,8 +250,14 @@ The calling thread is the consumer, so backpressure reaches all the way back."
     (join pipe :errorp errorp)
     pipe))
 
-(defun collect-pipeline (stages &key (capacity *default-capacity*) errorp)
-  "Run STAGES and return the last stage's output as a list."
-  (let ((acc '()))
-    (each stages (lambda (x) (push x acc)) :capacity capacity :errorp errorp)
-    (nreverse acc)))
+(defun collect-pipeline (stages &key (capacity *default-capacity*) (errorp t))
+  "Run STAGES and return the last stage's output as a list.
+
+Two values: the objects, and the pipeline's failures.  The second is what makes
+a partial result readable when ERRORP is NIL -- otherwise NIL comes back for an
+empty run and for a broken one alike, which is the whole reason ERRORP now
+defaults to T."
+  (let ((acc '()) (pipe nil))
+    (setf pipe (each stages (lambda (x) (push x acc))
+                     :capacity capacity :errorp errorp))
+    (values (nreverse acc) (pipeline-failures pipe))))

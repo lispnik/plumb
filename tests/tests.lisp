@@ -1466,13 +1466,17 @@ and this test hangs rather than fails."
 unrefcounted CLOSE-INPUT it took the upstream with it and the surviving workers
 starved -- which is the bug the refcount exists to prevent."
   (with-timeout (20 :one-worker-fails)
+    ;; :ERRORP NIL because a PARTIAL result is exactly the point here -- one
+    ;; worker dies and the rest finish the job.  That is the case the default
+    ;; exists to make loud, so this is the one place that opts out of it.
     (let ((result (collect-pipeline
                    (list (counter :limit 100)
                          (xform (lambda (n)
                                   ;; Exactly one worker dies, on one object.
                                   (when (= n 0) (error "worker down"))
                                   n)
-                                :workers 4)))))
+                                :workers 4))
+                   :errorp nil)))
       ;; 99 of the 100 survive: only the object that signalled is lost, along
       ;; with the one worker that was carrying it.
       (check (= 99 (length result)) :the-other-workers-finished-the-job)
@@ -1951,6 +1955,66 @@ having no terminator but EOF.")
 
 
 
+(defun test-line-continuation ()
+  "A pipeline laid out over several lines.  Without this, `ls \"src/*\"` on one
+line and `| take 5` on the next did NOT compose: the first line is a complete
+pipeline on its own, so it ran, and the second started a fresh one.  Silent, and
+it cost an afternoon twice -- once with | and once with a multi-line from-sql
+that quietly lost its :database."
+  ;; A trailing | or \\ means "not finished".
+  (check (plumb.cli::continued-line-p "ls |") :trailing-pipe-continues)
+  (check (plumb.cli::continued-line-p "ls | take 5 \\") :trailing-backslash-continues)
+  (check (plumb.cli::continued-line-p "ls |   ") :trailing-space-does-not-hide-it)
+  (check (not (plumb.cli::continued-line-p "ls | take 5")) :a-finished-line-does-not)
+  (check (not (plumb.cli::continued-line-p "")) :empty-is-not-a-continuation)
+  ;; TRY-READ must therefore report INCOMPLETE, not OK -- `ls |` reads fine as
+  ;; a one-stage pipeline, which is exactly the trap.
+  (check (eq :incomplete (nth-value 1 (plumb.cli::try-read "counter :limit 3 |")))
+         :try-read-asks-for-more)
+  (check (eq :ok (nth-value 1 (plumb.cli::try-read "counter :limit 3 | take 1")))
+         :and-stops-when-it-is-done)
+  ;; A backslash is spliced out; a pipe stays, because it is part of the
+  ;; pipeline rather than punctuation about layout.
+  (check (equal "a b" (plumb.cli::splice-continuations (format nil "a \\~%b")))
+         :backslash-joins-and-vanishes)
+  (check (equal (format nil "a |~%b") (plumb.cli::splice-continuations (format nil "a |~%b")))
+         :pipe-is-left-alone)
+  ;; And the whole thing reads as one pipeline either way.
+  (check (equal '(list (counter :limit 3) (take 1))
+                (read-shell (plumb.cli::splice-continuations
+                             (format nil "counter :limit 3 |~%  take 1"))))
+         :reads-as-one-pipeline)
+  (check (equal '(list (counter :limit 3) (take 1))
+                (read-shell (plumb.cli::splice-continuations
+                             (format nil "counter :limit 3 \\~%  | take 1"))))
+         :backslash-form-reads-the-same))
+
+(defun test-a-failed-pipeline-is-not-an-empty-one ()
+  "COLLECT-PIPELINE used to default to :ERRORP NIL, so a stage that died gave
+back NIL -- indistinguishable from a run that simply found nothing.  That is a
+wrong answer with no error, and it is how an empty result got mistaken for a
+quiet network while writing the ARP demos."
+  (with-timeout (20 :failed-is-not-empty)
+    (let ((boom (list (counter :limit 3)
+                      (xform (lambda (n) (declare (ignore n)) (error "boom"))))))
+      ;; Loud by default.
+      (let ((condition (nth-value 1 (ignore-errors (collect-pipeline boom)))))
+        (check (typep condition 'pipeline-error) :a-dead-stage-signals)
+        (check (search "boom" (princ-to-string condition)) :and-says-what-died))
+      ;; Opting out still works, and now the failure is READABLE rather than
+      ;; merely absent -- which is what makes a partial result usable.
+      (multiple-value-bind (objects failures) (collect-pipeline boom :errorp nil)
+        (check (null objects) :nothing-came-through)
+        (check failures :but-the-failure-is-reported)
+        (check (search "boom" (princ-to-string (cdr (first failures))))
+               :and-it-is-the-right-one)))
+    ;; A genuinely empty pipeline is still empty, with no failures -- the
+    ;; distinction the second value exists to make.
+    (multiple-value-bind (objects failures)
+        (collect-pipeline (list (counter :limit 3) (where (constantly nil))))
+      (check (null objects) :empty-result)
+      (check (null failures) :and-no-failures))))
+
 (defun test-uniq-dedupes-strings ()
   "UNIQ defaulted to EQL, under which two equal STRINGS are different objects --
 so `ls | uniq :key .name` quietly kept every duplicate.  A wrong answer with no
@@ -2183,6 +2247,8 @@ until FROM or BY was given, and then it emitted NOTHING rather than erroring."
                   test-git-outside-a-repository-is-a-clear-error
                   test-lsof-field-format-state-machine
                   test-handles-on-our-own-process
+                  test-line-continuation
+                  test-a-failed-pipeline-is-not-an-empty-one
                   test-uniq-dedupes-strings
                   test-counter-limit-is-a-count
                   test-help-registry

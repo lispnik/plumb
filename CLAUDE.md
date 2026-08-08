@@ -121,6 +121,17 @@ ocicl install                              ; restore ocicl/ after a fresh clone
   what the suite can test: `interfaces` is exercised for real, and `hosts` is
   tested only through its *conversion*, against records built by hand. A test
   that depends on which machines happen to be switched on is not a test.
+- **A failed pipeline must not look like an empty one.** `collect-pipeline` and
+  `each` defaulted to `:errorp nil`, so a stage that died returned NIL -- the
+  same answer as a run that found nothing. `:errorp` is T now, and
+  `collect-pipeline` returns the failures as a second value so a *partial*
+  result is still readable. Pass `:errorp nil` where partial success is the
+  point, as it is for a parallel stage whose workers fail independently.
+- **A word-mode line may be continued with a trailing `|` or `\`.** Without it
+  `ls "src/*"` and `| take 5` on the next line did not compose: the first line
+  is a complete pipeline, so it ran and the second started a new one. The rule
+  lives in `try-read`, which the REPL and `eval-text` both use, so the two
+  cannot diverge -- they already had, over multi-line blocks.
 - **A default that is right for keywords and wrong for strings is the worst
   kind.** `uniq` defaulted to `eql`, so `ls | uniq :key .name` silently kept
   every duplicate -- while keywords, numbers and structs all behaved, which is
