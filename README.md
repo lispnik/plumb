@@ -354,6 +354,50 @@ a downstream `head` closing the pipe reaches the source through exactly the
 same backpressure `take` uses internally. Exit status: 0 ok, 1 evaluation or
 pipeline error, 2 usage error, 130 interrupt.
 
+## ~/.plumbrc
+
+A startup file, if you have one. Ordinary Lisp, read in the `plumb` package, so
+`defstage` and every built-in are available unqualified. `examples/plumbrc` is
+a working one — copy it, or point `PLUMB_RC` at it:
+
+```
+PLUMB_RC=examples/plumbrc plumb 'ls "**/*.lisp" | recent | table'
+```
+
+It shows the three things worth putting there: a **prompt** (`ple:*prompt*`
+takes a string or a function of no arguments — a function for anything that
+changes), a couple of **custom stages**, and a `present` method.
+
+Two decisions in it are worth knowing.
+
+**It loads for one-shot runs as well as the prompt**, which is where this parts
+company with `.bashrc`. A custom stage is worth as much in `plumb 'recent |
+table'` as it is interactively, and a definition that existed only at a prompt
+would be a trap — every pipeline worth keeping starts there and ends up in a
+script. `--no-rc` is the way out, and is what a script wanting only built-ins
+should pass.
+
+**A broken rc does not stop plumb starting.** The error goes to stderr and
+startup continues, because a shell you cannot start in order to fix the file
+that stops it starting is not much of a shell. The exit status is untouched: a
+bad rc is the environment misbehaving, not this run's pipeline failing.
+
+A stage defined there is a stage like any other — `help` describes it, TAB
+completes it, and `explain` draws it, because all three read the registry
+`defstage` writes to:
+
+```
+$ PLUMB_RC=examples/plumbrc plumb 'explain ls "src/" | recent | take 3'
+pipeline of 3 stages, 2 channels, 3 threads
+
+  ls pattern="src/"   source     nothing → :objects
+  │ channel, capacity 64
+  recent days=7       transform  :objects → :objects
+      ⋯ barrier: emits nothing until its input ends
+  │ channel, capacity 64
+  take n=3            transform  :objects → :objects
+```
+
 ## watch
 
 `explain` says what a pipeline *is*; `watch` says what it is **doing**. Same

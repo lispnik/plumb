@@ -110,4 +110,5 @@
 (defpackage #:plumb.cli
   (:use #:cl)
   (:documentation "The `plumb` executable.  See src/cli.lisp.")
-  (:export #:main #:repl #:*version* #:*prompt-directory-width*))
+  (:export #:main #:repl #:*version* #:*prompt-directory-width*
+           #:*rc* #:rc-path #:load-rc))

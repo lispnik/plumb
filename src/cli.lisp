@@ -112,6 +112,7 @@ failure, so the caller can set an exit status without unwinding."
                  ((flag= flag "-q" "--quiet")       (setf (opt-quiet o) t))
                  ((flag= flag "-i" "--interactive") (setf (opt-interactive o) t))
                  ((flag= flag "--no-edit")          (setf *edit* nil))
+                 ((flag= flag "--no-rc")            (setf *rc* nil))
                  ((flag= flag "-e" "--eval")
                   (push (cons :eval (value flag)) (opt-jobs o)))
                  ((flag= flag "-f" "--file")
@@ -400,11 +401,60 @@ than relying on RUN-JOBS having done it."
         (edited-repl quiet)
         (plain-repl quiet))))
 
+;;; ----------------------------------------------------------------- the rc
+;;;
+;;; A startup file is where a custom stage belongs: DEFSTAGE is exported and
+;;; the REPL already evaluates in the PLUMB package, so everything a stage
+;;; needs was reachable -- there was just nowhere to put it.
+
+(defvar *rc* t "NIL skips the startup file (--no-rc).")
+
+(defun rc-path ()
+  "Where the startup file lives.  PLUMB_RC overrides it, which is what lets a
+test -- or a script wanting a known environment -- name its own."
+  (let ((override (sb-ext:posix-getenv "PLUMB_RC")))
+    (if (and override (plusp (length override)))
+        (sb-ext:parse-native-namestring override)
+        (merge-pathnames ".plumbrc" (user-homedir-pathname)))))
+
+(defun load-rc (&optional (path (rc-path)))
+  "Load the startup file if there is one.  Returns T if it loaded cleanly.
+
+PATH is an argument so the suite can hand it a temporary file: the alternative
+is a test that sets an environment variable, which means SB-POSIX, which core
+plumb does without.
+
+Loaded for ONE-SHOT RUNS AS WELL as the REPL, which is where this parts company
+with .bashrc.  A custom stage is worth exactly as much in `plumb 'shas | table'`
+as at a prompt, and a definition that existed only interactively would be a
+trap -- every pipeline worth keeping starts life at the prompt and ends up in a
+script.  --no-rc is the way out, and it is what a script wanting only built-ins
+should use.
+
+A BROKEN RC MUST NOT MAKE PLUMB UNUSABLE.  The error is reported and startup
+continues, because the alternative is a shell you cannot start in order to fix
+the file that stops it starting.  The exit status is untouched: a bad rc is the
+user's environment misbehaving, not this run's pipeline failing."
+  (if (not (probe-file path))
+      t
+      (handler-case
+          (let ((*package* (find-package '#:plumb)))
+            (load path :verbose nil :print nil)
+            t)
+        (error (c)
+          (format *error-output* "~&plumb: ~a: ~a~%" (sb-ext:native-namestring path) c)
+          (format *error-output* "plumb: continuing without it (--no-rc to skip).~%")
+          (force-output *error-output*)
+          nil))))
+
 (defun run-jobs (o)
   (let ((plumb:*default-capacity* (or (opt-capacity o) plumb:*default-capacity*))
         (*package* (find-package '#:plumb))
         (jobs (opt-jobs o))
         (status 0))
+    ;; Before any job, so a stage the rc defines is available to the very first
+    ;; one -- and before the REPL, so a prompt it sets is the first one shown.
+    (when *rc* (load-rc))
     ;; Nothing to evaluate: read a pipe, or talk to a terminal.
     (when (and (null jobs) (not (opt-interactive o)))
       (if (interactive-stream-p *standard-input*)
@@ -443,6 +493,7 @@ options:
   -q, --quiet         print pipeline output only, not other values
   -i, --interactive   read-eval-print loop once the forms run out
   --no-edit           plain input, no raw-mode line editing
+  --no-rc             skip ~~/.plumbrc (PLUMB_RC overrides the path)
   -h, --help          this text
   -V, --version       version
   --                  treat every remaining argument as a form

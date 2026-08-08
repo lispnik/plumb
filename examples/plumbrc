@@ -1,0 +1,129 @@
+;;;; An example ~/.plumbrc -- copy it there, or point PLUMB_RC at this file:
+;;;;
+;;;;     PLUMB_RC=examples/plumbrc plumb 'recent | table'
+;;;;
+;;;; It is ORDINARY LISP, read in the PLUMB package, so DEFSTAGE, EMIT, FIELD
+;;;; and every built-in stage are available unqualified.  Word mode is the
+;;;; command-line syntax; there is no word mode here, and none is wanted --
+;;;; this file defines things rather than running pipelines.
+;;;;
+;;;; It is loaded for ONE-SHOT RUNS AS WELL as the prompt, which is where plumb
+;;;; parts company with .bashrc.  A stage is worth as much in a script as it is
+;;;; interactively, and a definition that worked only at the prompt would be a
+;;;; trap -- every pipeline worth keeping starts there and ends up in a script.
+;;;; `plumb --no-rc' is the way out.
+;;;;
+;;;; A BROKEN RC DOES NOT STOP PLUMB STARTING.  The error is printed and
+;;;; startup continues, because a shell you cannot start in order to fix the
+;;;; file that stops it starting is not much of a shell.  Try it: put (error
+;;;; "boom") at the top and watch plumb complain and carry on.
+
+(in-package #:plumb)
+
+;;; ---------------------------------------------------------------- the prompt
+;;;
+;;; PLE:*PROMPT* takes a string or a function of no arguments.  A function is
+;;; what you want for anything that changes -- the directory, the exit status,
+;;; a git branch -- since a string is captured once and never asked again.
+;;;
+;;; PLE:PAINT adds SGR colour and knows to keep quiet when output is not a
+;;; terminal, so a painted prompt does not corrupt a piped session.
+
+(setf ple:*prompt*
+      (lambda ()
+        (format nil "~a~a "
+                (ple:paint (plumb.cli::abbreviate-directory) :cyan)
+                ;; Red when the last form failed, which is the one piece of
+                ;; state worth seeing without asking for it.
+                (ple:paint "λ" (if plumb.cli::*last-ok* :green :red)))))
+
+;;; Shown while a form is still unbalanced -- a multi-line {...} block, or a
+;;; word-mode line continued with a trailing | or backslash.
+(setf ple:*continuation-prompt* (ple:paint "  … " :grey))
+
+;;; Deeper channels than the default 64.  Backpressure is plumb's only flow
+;;; control, so this is the single knob: bigger means a fast source runs
+;;; further ahead of a slow sink, at the cost of holding more objects.
+;; (setf *default-capacity* 256)
+
+;;; ------------------------------------------------------------ custom stages
+;;;
+;;; DEFSTAGE takes the same declarations the built-ins use, and they are worth
+;;; getting right: (:consumes X) (:produces X) is checked BEFORE any thread
+;;; starts, so a mistake is a clear error rather than a deadlock 400 objects
+;;; in.  Add (:barrier t) if the stage emits nothing until its input ends --
+;;; EXPLAIN shows that, and it cannot be worked out from the type signature.
+;;;
+;;; A stage body is an ordinary loop: no locks, no threads.  DO-INPUT reads,
+;;; EMIT writes, and (FINISH) stops early and tears the pipeline down.
+
+;;; A TRANSFORM, and a barrier.  It filters what LS already produces rather
+;;; than globbing again -- composition is the point of a pipeline, and a stage
+;;; that re-implements its upstream is a stage that will disagree with it.
+(defstage recent (&key (days 7))
+  "Keep only the objects modified within the last DAYS days, newest first.
+
+  ls \"**/*.lisp\" | recent | table
+  ls \"src/\" | recent :days 1 | print-items
+
+Reads .mtime through FIELD, so it works on anything that has one -- a
+FILE-ENTRY from LS today, and whatever you write next without this stage
+knowing about it.
+
+A barrier: `newest first' is not knowable until the last object has arrived.
+That is declared rather than left to be discovered, because EXPLAIN shows it
+and the type signature cannot imply it."
+  (:consumes :objects) (:produces :objects) (:barrier t)
+  (let ((cutoff (- (get-universal-time) (* days 24 60 60)))
+        (kept '()))
+    (do-input (x)
+      (let ((m (field x :mtime)))
+        (when (and (numberp m) (> m cutoff))
+          (push x kept))))
+    (dolist (x (sort kept #'> :key (lambda (o) (or (field o :mtime) 0))))
+      (emit x))))
+
+;;; A SOURCE.  (:consumes nil) is what makes it one, and there is no DO-INPUT
+;;; because there is nothing to read -- just EMIT.
+(defstage builtins ()
+  "Emit one object per stage this plumb knows about, including these.
+
+  builtins | where {(eq .kind :source)} | table
+  builtins | sort-by .name | print-items
+
+HELP prints the same registry; this hands it over as objects, so the ordinary
+verbs work on it."
+  (:consumes nil) (:produces :objects)
+  (maphash (lambda (name info)
+             (emit (list :name (string-downcase (symbol-name name))
+                         :kind (stage-kind info)
+                         :barrier (and (si-barrier info) t)
+                         :parallel (and (si-parallel info) t))))
+           *stages*))
+
+;;; A transform.  Consumes objects and produces them, so it drops into the
+;;; middle of any pipeline.
+(defstage bigger-than ((size integer))
+  "Pass through only the objects whose .size exceeds SIZE.
+
+  ls \"**/*.lisp\" | bigger-than 4kb | table
+
+Really just WHERE with a name -- which is the point.  A pipeline you type twice
+is a stage, and putting it here means TAB completion and HELP know about it,
+because both read the same registry DEFSTAGE writes to."
+  (:consumes :objects) (:produces :objects)
+  (do-input (x)
+    (let ((n (field x :size)))
+      (when (and (numberp n) (> n size))
+        (emit x)))))
+
+;;; Sizes are binary and durations are seconds, the same suffix literals word
+;;; mode understands: 4kb above is 4096, and 7d would be a week.
+
+;;; ------------------------------------------------------------------ the rest
+;;;
+;;; Anything else you would type at the prompt belongs here too: a DEFUN used
+;;; from a {...} block, a DEFPARAMETER, a PRESENT method giving one of your own
+;;; types the one-object-one-line rule.
+
+(defmethod present ((x (eql :hello))) "hello from ~/.plumbrc")

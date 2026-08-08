@@ -58,6 +58,18 @@ ocicl install                              ; restore ocicl/ after a fresh clone
   the first stage to finish must not close it for the rest; `run` sets
   `channel-producers` to the stage count. Without this a *live* reader on `:err`
   saw EOF before the error arrived, every time.
+- **`~/.plumbrc` loads for one-shot runs, not just the REPL.** That is the
+  opposite of `.bashrc`, deliberately: a custom stage is worth as much in
+  `plumb 'recent | table'` as at a prompt, and a definition that existed only
+  interactively would be a trap, since every pipeline worth keeping starts at
+  the prompt and ends in a script. `--no-rc` is the way out. It is read in the
+  `plumb` package so `defstage` needs no qualifying, and **a broken rc reports
+  and carries on** rather than aborting startup -- a shell you cannot start in
+  order to fix the file that stops it starting is no use. The exit status is
+  untouched, because a bad rc is the environment misbehaving rather than this
+  run's pipeline failing. `load-rc` takes its path as an argument purely so the
+  suite can hand it a temporary file; testing the `PLUMB_RC` branch instead
+  would mean `sb-posix`, which core plumb does without.
 - **`present` owns the one-object-one-line rule.** A stage runs in its own
   thread and does not inherit the caller's `*print-pretty*`, so each printer
   used to rediscover this separately — and drift. Give a type a `present`

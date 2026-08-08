@@ -2326,6 +2326,49 @@ until FROM or BY was given, and then it emitted NOTHING rather than erroring."
   (check (search "No built-in named" (help-output (help if))) :special-operator-rejected)
   (check (search "(take n)" (help-output (help take))) :plumb-symbol-still-resolves))
 
+(defun test-rc-file ()
+  "The startup file, and mostly the part that must not go wrong: a broken rc
+has to leave a usable plumb behind, since a shell you cannot start in order to
+fix the file that stops it starting is no use to anybody."
+  (with-timeout (15 :rc-file)
+    (let ((good "/tmp/plumb-rc-good.lisp")
+          (bad  "/tmp/plumb-rc-bad.lisp"))
+      (unwind-protect
+           (progn
+             ;; Read in the PLUMB package, so a stage definition needs no
+             ;; qualifying -- which is the whole reason an rc is worth having.
+             (with-open-file (s good :direction :output :if-exists :supersede)
+               (write-line "(defparameter *rc-test-marker* :loaded)" s)
+               (write-line "(defstage rc-test-stage () \"x\"" s)
+               (write-line "  (:consumes nil) (:produces :objects) (emit 42))" s))
+             (check (plumb.cli::load-rc good) :a-good-rc-loads)
+             (check (eq :loaded (symbol-value (find-symbol "*RC-TEST-MARKER*" '#:plumb)))
+                    :its-definitions-took-effect)
+             (check (gethash 'plumb::rc-test-stage plumb:*stages*)
+                    :a-stage-it-defines-is-registered)
+             (check (equal '(42) (collect-pipeline (list (funcall (find-symbol "RC-TEST-STAGE" '#:plumb)))))
+                    :and-that-stage-actually-runs)
+
+             ;; The one that matters.  NIL rather than a signal, and the error
+             ;; goes to stderr rather than taking the process with it.
+             (with-open-file (s bad :direction :output :if-exists :supersede)
+               (write-line "(error \"deliberately broken rc\")" s))
+             (let ((noise (make-string-output-stream)))
+               (let ((*error-output* noise))
+                 (check (null (plumb.cli::load-rc bad)) :a-broken-rc-returns-nil))
+               (check (search "deliberately broken" (get-output-stream-string noise))
+                      :and-says-why-on-stderr))
+
+             ;; Absent is not an error: most people have no rc at all.
+             (check (plumb.cli::load-rc "/tmp/plumb-rc-does-not-exist.lisp")
+                    :a-missing-rc-is-fine))
+        (ignore-errors (delete-file good))
+        (ignore-errors (delete-file bad))
+        (remhash 'plumb::rc-test-stage plumb:*stages*)))
+    ;; Default path, when PLUMB_RC says nothing.
+    (let ((path (plumb.cli::rc-path)))
+      (check (search "plumbrc" (namestring path)) :default-path-is-plumbrc))))
+
 (defun test-prompt-designators ()
   "PLAIN-REPL and the editor resolve *PROMPT* through the same function."
   (check (string= "> " (ple:prompt-text "> ")) :string-prompt)
@@ -2461,6 +2504,7 @@ until FROM or BY was given, and then it emitted NOTHING rather than erroring."
                   test-help-unknown
                   test-help-variables
                   test-help-speaks-only-for-plumb
+                  test-rc-file
                   test-prompt-designators))
       (format t "~&; ~a~%" fn)
       (funcall fn))
