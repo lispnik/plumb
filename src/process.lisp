@@ -56,9 +56,42 @@ quote against."
       command
       (format nil "~{~a~^ ~}" command)))
 
+(defvar *stderr-serial* (list 0)
+  "Bumped with ATOMIC-INCF, so concurrent stages cannot be handed one name
+twice.  A cons rather than a bare special: ATOMIC-INCF needs a place, and the
+global *RANDOM-STATE* this replaces was itself a shared mutable object several
+stage threads were calling into at once.")
+
 (defun %stderr-file ()
-  (merge-pathnames (format nil "plumb-stderr-~36r.txt" (random (expt 2 48)))
-                   #p"/tmp/"))
+  "Create and return a private file for one child's stderr.
+
+This used to be (random (expt 2 48)), which LOOKS unique and is not: SBCL's
+initial *RANDOM-STATE* is identical in every image, so separate plumb processes
+produce the same sequence and therefore the same filename.  Two runs then share
+one file, and since captured stderr is attached to COMMAND-FAILED, a command
+can report another process's diagnostics.  Demonstrated rather than deduced --
+two concurrent runs whose children wrote AAA and BBB both reported AAA.
+
+Correctness rests on the exclusive create, not on the name: the file must not
+already exist, and OPEN with :IF-EXISTS NIL is what refuses rather than adopts
+it.  Pids are recycled and a hard kill leaves files behind, so a plausible name
+is not evidence of a free one.  The pid and serial only make the first attempt
+almost always succeed, keeping concurrent processes out of each other's way."
+  (let ((pid (sb-unix:unix-getpid))          ; SB-UNIX is in the base image;
+                                             ; SB-POSIX is a contrib, which
+                                             ; core plumb does without.
+        (serial (sb-ext:atomic-incf (car *stderr-serial*))))
+    (loop for attempt from 0 below 1000
+          for path = (merge-pathnames
+                      (format nil "plumb-stderr-~d-~d-~d.txt" pid serial attempt)
+                      #p"/tmp/")
+          do (let ((stream (open path :direction :output
+                                      :if-exists nil
+                                      :if-does-not-exist :create)))
+               (when stream
+                 (close stream)
+                 (return path)))
+          finally (error "no free stderr file in /tmp after ~d attempts" attempt))))
 
 (defun %slurp (path)
   (when (and path (probe-file path))

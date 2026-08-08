@@ -1165,6 +1165,37 @@ the whole image exits."
 ;;; feeder left parked when the stage has gone.  Every one is time-boxed, since
 ;;; the failure mode here is a hang rather than a wrong answer.
 
+(defun test-stderr-files-are-private ()
+  "A captured stderr is attached to COMMAND-FAILED, so sharing the file between
+two commands makes one report the other's diagnostics.  The old name came from
+RANDOM against SBCL's initial *RANDOM-STATE*, which is identical in every
+image, so separate processes generated the same one."
+  (with-timeout (10 :stderr-file)
+    (let ((a (plumb::%stderr-file))
+          (b (plumb::%stderr-file)))
+      (unwind-protect
+           (progn
+             (check (not (equal a b)) :successive-calls-differ)
+             (check (probe-file a) :created-not-merely-named)
+             ;; The name is not evidence of a free file.  Pids are recycled and
+             ;; a hard kill leaves files behind, so an existing one has to be
+             ;; refused rather than adopted -- which is the property the
+             ;; exclusive create buys and a random name never did.
+             (check (null (open a :direction :output :if-exists nil
+                                  :if-does-not-exist :create))
+                    :an-existing-file-is-refused))
+        (ignore-errors (delete-file a))
+        (ignore-errors (delete-file b))))
+    ;; End to end: the condition carries this command's stderr.
+    (let* ((noise (make-string-output-stream))
+           (pipe (let ((*error-output* noise))
+                   (let ((p (run (list (sh "sh -c 'echo mine >&2; exit 1'")))))
+                     (join p)
+                     p)))
+           (failure (cdr (first (pipeline-failures pipe)))))
+      (check (search "mine" (or (command-failed-stderr failure) ""))
+             :stderr-belongs-to-its-own-command))))
+
 (defun test-sh-filter-round-trip ()
   (with-timeout (15 :sh-filter)
     (check (equal '("ALPHA" "BETA")
@@ -2335,6 +2366,7 @@ until FROM or BY was given, and then it emitted NOTHING rather than erroring."
                   test-sh-source
                   test-sh-exit-status
                   test-sh-teardown-kills-the-child
+                  test-stderr-files-are-private
                   test-sh-filter-round-trip
                   test-sh-filter-needs-stdin-eof
                   test-sh-filter-survives-a-full-pipe
