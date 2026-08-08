@@ -252,6 +252,13 @@ ocicl install                              ; restore ocicl/ after a fresh clone
   (under cl-csv, via cl-unicode) the second, and both were caught only by
   running on the Pi. `make check-vendored` loads every optional system with the
   inherited registry switched off, which is the cheap way to catch it here.
+  `demo.lisp` builds its own registry and used to end it with
+  `:inherit-configuration`, which was the same trap a fourth time: with `ocicl/`
+  moved aside it still found jzon, cl-csv and Ironclad next door and ran every
+  section, so "skipped cleanly" could not be tested and the demo would work on a
+  checkout where the build does not. It names what it needs and inherits
+  nothing. The sibling `../arp-scan/` is the one dependency outside `ocicl/`,
+  and it is named explicitly there for the same reason.
 - **Dependencies are vendored, never resolved at build time.** `ocicl.csv` is
   committed and `ocicl/` is not, so `ocicl install` restores an exact tree and
   the build itself needs no network. Before this, `make crypto` resolved
