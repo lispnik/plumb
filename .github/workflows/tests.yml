@@ -101,10 +101,17 @@ jobs:
           ocicl version
 
       # ocicl.csv is committed and ocicl/ is not, so this restores an exact
-      # tree.  It is the only step here that needs the network.
-      - name: Restore the vendored tree
-        working-directory: plumb
-        run: ocicl install
+      # tree.  The only steps here that need the network.
+      #
+      # arp-scan pins its OWN tree and needs it restored too: it is a sibling
+      # checkout rather than a vendored library, so a fresh clone arrives with
+      # nothing under ocicl/ and the first thing to notice is ASDF failing to
+      # find clingon.  A developer's machine has had that tree for months,
+      # which is exactly the sort of difference CI exists to expose.
+      - name: Restore the vendored trees
+        run: |
+          (cd plumb && ocicl install)
+          (cd arp-scan && ocicl install)
 
       - name: Optional test systems
         working-directory: plumb
