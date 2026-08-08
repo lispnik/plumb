@@ -1158,6 +1158,91 @@ the whole image exits."
              :sink-wrote-every-object)
       (ignore-errors (delete-file path)))))
 
+;;; ------------------------------------------------------------- sh-filter
+;;;
+;;; The stage that runs a thread, so the tests that matter are the ones about
+;;; the two ways that can hang: a pipe buffer with nobody draining it, and a
+;;; feeder left parked when the stage has gone.  Every one is time-boxed, since
+;;; the failure mode here is a hang rather than a wrong answer.
+
+(defun test-sh-filter-round-trip ()
+  (with-timeout (15 :sh-filter)
+    (check (equal '("ALPHA" "BETA")
+                  (sh-text (list (from-list '("alpha" "beta"))
+                                 (sh-filter "tr a-z A-Z"))))
+           :objects-through-a-command-and-back)
+    ;; A list is exec'd directly here too, with no shell to re-split it.
+    (check (equal '("a b   c")
+                  (sh-text (list (from-list '("a b   c")) (sh-filter (list "cat")))))
+           :argv-list-bypasses-the-shell)
+    ;; PRESENT, not PRINC-TO-STRING: the command sees the line PRINT-ITEMS
+    ;; would have shown.  :AS overrides it.
+    (check (equal '("XX")
+                  (sh-text (list (from-list '("ignored"))
+                                 (sh-filter "cat" :as (lambda (x) (declare (ignore x)) "XX")))))
+           :as-overrides-the-rendering)))
+
+(defun test-sh-filter-needs-stdin-eof ()
+  "A command that produces nothing until stdin closes.  If the feeder did not
+close it, this hangs -- which is why the close is on both of its exit paths."
+  (with-timeout (15 :sh-filter-eof)
+    (check (equal '("3")
+                  (sh-text (list (from-list '("a" "b" "c"))
+                                 (sh-filter "wc -l | tr -d ' '"))))
+           :wc-l-terminated)
+    ;; ...and a command that reorders, so it cannot emit before the last line.
+    (check (equal '("a" "b" "c")
+                  (sh-text (list (from-list '("c" "a" "b")) (sh-filter "sort"))))
+           :sort-is-a-barrier-and-still-works)))
+
+(defun test-sh-filter-survives-a-full-pipe ()
+  "THE test.  More data than a pipe buffer holds in either direction: writing
+it all before reading would fill the kernel's 64K and stop both sides for good.
+This passing is the only evidence the feeder thread is doing its job."
+  (with-timeout (60 :sh-filter-large)
+    (let* ((n 20000)
+           (objects (loop for i from 1 to n collect (format nil "line-~d-padded-out-to-some-width" i)))
+           (out (sh-text (list (from-list objects) (sh-filter "cat")))))
+      (check (= n (length out)) :every-line-survived)
+      (check (equal (first objects) (first out)) :first-line-intact)
+      (check (equal (car (last objects)) (car (last out))) :last-line-intact))))
+
+(defun test-sh-filter-teardown ()
+  "A bounded consumer in front of an endless source, with a child in between.
+Both the child and the feeder have to stop, and the pipeline has to return."
+  (with-timeout (30 :sh-filter-teardown)
+    (let ((marker "plumbfiltermarker"))
+      (check (equal '("1" "2" "3")
+                    (sh-text (list (counter :from 1)
+                                   (sh-filter (format nil "cat # ~a" marker))
+                                   (take 3))))
+             :take-stops-an-endless-filter)
+      (sleep 0.3)
+      (check (zerop (processes-matching marker)) :child-is-dead))
+    ;; The other early exit: the CHILD stops first, while the source is still
+    ;; producing.  The feeder must not be left writing into a dead pipe.
+    (check (equal '("1")
+                  (sh-text (list (counter :from 1)
+                                 (sh-filter "head -1" :on-exit :ignore))))
+           :child-exiting-early-still-returns)))
+
+(defun test-sh-filter-exit-status ()
+  (with-timeout (15 :sh-filter-exit)
+    (let ((pipe (run (list (from-list '("x")) (sh-filter "cat >/dev/null; exit 3")))))
+      (join pipe)
+      (let ((failure (cdr (first (pipeline-failures pipe)))))
+        (check (typep failure 'command-failed) :non-zero-exit-is-a-condition)
+        (check (eql 3 (command-failed-exit-code failure)) :exit-code)))
+    (let ((pipe (run (list (from-list '("x"))
+                           (sh-filter "cat >/dev/null; exit 3" :on-exit :ignore)))))
+      (join pipe)
+      (check (null (pipeline-failures pipe)) :on-exit-ignore))
+    ;; Wired as a source it has nothing to read, and says so rather than
+    ;; blocking or emitting nothing.
+    (let ((pipe (run (list (sh-filter "cat")))))
+      (join pipe)
+      (check (= 1 (length (pipeline-failures pipe))) :source-position-is-an-error))))
+
 (defun test-lines-still-works ()
   "EMIT-LINES was factored out of LINES so SH could share it."
   (with-timeout (5 :lines)
@@ -2204,6 +2289,11 @@ until FROM or BY was given, and then it emitted NOTHING rather than erroring."
                   test-sh-source
                   test-sh-exit-status
                   test-sh-teardown-kills-the-child
+                  test-sh-filter-round-trip
+                  test-sh-filter-needs-stdin-eof
+                  test-sh-filter-survives-a-full-pipe
+                  test-sh-filter-teardown
+                  test-sh-filter-exit-status
                   test-to-sh-sink
                   test-lines-still-works
                   test-editor-text-operations

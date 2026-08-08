@@ -10,12 +10,21 @@
 ;;;; child can be reaped -- a downstream TAKE closes our output, the SEND
 ;;;; inside EMIT-LINES signals CHANNEL-CLOSED, and we unwind through there.
 ;;;;
-;;;; A mid-pipeline filter (objects -> stdin, stdout -> objects) is deliberately
-;;;; absent.  It has to write and read the child concurrently or the pipe
-;;;; buffers deadlock, and it also blocks in RECV, which is a condition
-;;;; variable and cannot be selected on alongside file descriptors.  That means
-;;;; a helper thread inside the stage, which is exactly what "a stage contains
-;;;; no concurrency" forbids.  See CLAUDE.md.
+;;;; SH-FILTER (objects -> stdin, stdout -> objects) is the one stage in the
+;;;; project that runs a thread of its own, and it is a DELIBERATE exception to
+;;;; "a stage contains no concurrency" rather than an oversight.  The reason is
+;;;; a deadlock, not a preference: a filter must write the child's stdin and
+;;;; read its stdout at the same time -- write it all first and the kernel's
+;;;; pipe buffer fills with nobody draining stdout, and both sides stop for
+;;;; good.  Nor can one thread wait on both, because the object side blocks in
+;;;; RECV, a condition variable, and the byte side is a file descriptor; there
+;;;; is no primitive that selects across the two.
+;;;;
+;;;; What keeps the exception narrow, and what any change here must preserve:
+;;;; the feeder thread touches exactly ONE channel, never closes it, and owns
+;;;; no port.  CLOSE-INPUT stays with SPAWN-STAGE on the stage thread, so the
+;;;; refcounts still count precisely the threads RUN knows about -- which is
+;;;; the property the no-concurrency rule exists to protect.  See CLAUDE.md.
 
 (in-package #:plumb)
 
@@ -133,6 +142,93 @@ own stdout is inherited, so `(to-sh \"wc -l\")` prints where you would expect."
           (in (sb-ext:process-input proc)))
       (do-input (x)
         (write-line (if (stringp x) x (princ-to-string x)) in)))))
+
+;;; ---------------------------------------------------- the mid-pipeline filter
+
+(defun %feed-command (stream input as label)
+  "On a thread of its own, write every object arriving on INPUT to STREAM, one
+line each, and close STREAM when the objects run out.  Returns the TASK.
+
+Closing is the point of the exercise as much as the writing: `wc -l' produces
+nothing until stdin reaches EOF, and the stage thread is meanwhile blocked
+reading the stdout it will never write.  So the close happens on both exit
+paths, including the one where a write failed.
+
+A write to a child that has already gone signals rather than raising SIGPIPE,
+so an error here is expected traffic on the TAKE path and not a fault.  It is
+also what bounds this thread when the child exits early -- SBCL buffers, so the
+failure arrives within a buffer's worth of lines rather than after the whole
+input has been drained."
+  (spawn (format nil "plumb:feed>~a" label)
+         (lambda ()
+           (let ((*print-pretty* nil))
+             (unwind-protect
+                  (ignore-errors
+                   (loop
+                     (multiple-value-bind (obj ok) (recv input)
+                       (unless ok (return))
+                       (write-line (funcall as obj) stream)))
+                   (finish-output stream))
+               (ignore-errors (close stream)))))))
+
+(defstage sh-filter ((command (or string cons)) &key directory as
+                                                     (on-exit :signal) (stderr :capture))
+  "Filter the stream through COMMAND: each object to its stdin as a line, its
+stdout back as LINE objects.
+
+  ls \"src/*.lisp\" | sh-filter \"sort -r\" | take 3 | print-items
+  ps | sh-filter (list \"grep\" \"lisp\") | tally
+
+This is the shape SH and TO-SH leave out, and the one that lets an external
+command sit in the middle of a pipeline instead of only at an end.
+
+Objects become text through PRESENT, which is the project's one-object-one-line
+rule, so a FILE-ENTRY arrives at the command as the line you would have seen
+from PRINT-ITEMS.  :AS overrides that with any function of one object.  Note
+that TO-SH uses PRINC-TO-STRING instead -- an inconsistency worth knowing about
+until one of them moves.
+
+Coming back the other way the objects are LINEs, exactly as from SH, so .text
+and .number work and nothing knows the difference.
+
+RUNS A THREAD, alone among stages.  See the header of this file for why that
+is forced rather than chosen.  It follows that :WORKERS is not offered: two
+copies would interleave their lines into one stdin, and the command would see
+neither stream.
+
+A non-zero exit signals COMMAND-FAILED unless ON-EXIT is :IGNORE, and STDERR is
+:CAPTURE or :INHERIT, both as for SH."
+  (:consumes t) (:produces :objects)
+  (let ((label (%command-label command))
+        (input *input*)
+        (as (if as (ensure-fn as) #'present)))
+    (unless input
+      (error "Stage ~a tried to read input but is wired as a source." *stage-name*))
+    (with-command (proc command '(:input :stream :output :stream)
+                        :directory directory :stderr stderr :on-exit on-exit)
+      (let ((feeder (%feed-command (sb-ext:process-input proc) input as label))
+            (drained nil))
+        (unwind-protect
+             (progn (emit-lines (sb-ext:process-output proc) label)
+                    (setf drained t))
+          ;; Teardown, and the order matters on every line of it.
+          (unless drained
+            ;; We unwound, so downstream closed on us and the child's output is
+            ;; going nowhere.  Break it NOW: the feeder may be parked on a full
+            ;; pipe, and no channel operation can wake that -- only the read
+            ;; end closing will.  On the drained path the child is already
+            ;; finishing and killing it would lose the exit status.
+            (ignore-errors (sb-ext:process-kill proc +sigterm+)))
+          ;; SIGPIPE upstream, so a source still producing stops.  This is also
+          ;; what releases a feeder parked in RECV: RECV wakes on
+          ;; PRODUCER-CLOSED, which arrives only once the upstream stage tries
+          ;; to SEND, sees the closed channel and unwinds.  SPAWN-STAGE's own
+          ;; CLOSE-INPUT still runs afterwards and is idempotent with this.
+          (abort-input input)
+          ;; Everything above makes the feeder terminate; the timeout is for
+          ;; the child that ignores SIGTERM, which would otherwise hang the
+          ;; whole pipeline here rather than just itself.
+          (await feeder :timeout 5))))))
 
 ;;; ------------------------------------------------------------------- ps
 ;;;

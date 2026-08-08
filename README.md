@@ -881,12 +881,24 @@ adapters across it.
 
 ## External commands
 
-`sh` starts a pipeline from a command, `to-sh` ends one in a command:
+`sh` starts a pipeline from a command, `to-sh` ends one in a command, and
+`sh-filter` puts one in the middle:
 
 ```lisp
 (list (sh "git log --oneline") (where ($ (search "fix" (fld :text)))) (take 10))
 (list (ls "src/") (xform ($ (fld :name))) (to-sh "wc -l"))
+(list (ls "src/*.lisp") (sh-filter "sort -r") (take 3))
 ```
+
+`sh-filter` writes each object to the command's stdin as a line and reads its
+stdout back as `LINE` objects, so `.text` and `.number` work exactly as from
+`sh`. Objects are rendered with `present`, and `:as` overrides that.
+
+It is the one stage that runs a thread of its own, which is forced rather than
+chosen: a filter has to write stdin and read stdout at the same time, or the
+64K pipe buffer fills with nobody draining the other side. See CLAUDE.md. The
+consequence for callers is that `sh-filter` takes no `:workers` — two feeders
+would interleave their lines into one stdin.
 
 A **string** runs under `/bin/sh`, so pipes and globs work. A **list** is
 exec'd directly, with no shell to quote against — use it whenever an argument
@@ -1079,7 +1091,7 @@ completion all read that one package.
 | `src/pool.lisp` | stage threads leased from a cache instead of created |
 | `src/pipeline.lisp` | wiring, spawning, teardown, type checking |
 | `src/stages.lisp` | `from-list` `counter` `ls` `lines` `where` `xform` `take` `drop` `uniq` `peek` `sort-by` `tally` `accumulate` `to-text` `print-items` `table` |
-| `src/process.lisp` | `sh` / `to-sh` / `ps`: external commands and the process table |
+| `src/process.lisp` | `sh` / `to-sh` / `sh-filter` / `ps`: external commands and the process table |
 | `src/blockdev.lisp` | `disks`: /sys/block on Linux, `diskutil` on macOS |
 | `src/git.lisp` | `commits` / `changes`: git's own stable formats |
 | `src/json.lisp` | `from-json`: a JSON reader, so every --json tool is a source |
@@ -1100,10 +1112,10 @@ completion all read that one package.
   stage struct but `run` only wires `:out` and `:err`; `tee` needs a graph
   builder and a copy-on-fanout policy, since objects crossing a channel are
   shared references.
-- **External processes, the rest of it.** `sh` and `to-sh` cover the source and
-  sink shapes with real teardown and exit-status propagation. A mid-pipeline
-  filter would need a helper thread inside the stage (concurrent read/write, and
-  `recv` cannot be selected on), and there is no PTY path yet.
+- **External processes, the rest of it.** `sh`, `to-sh` and `sh-filter` cover
+  the source, sink and filter shapes with real teardown and exit-status
+  propagation. What remains is a PTY path for interactive programs;
+  `sb-ext:run-program` takes `:pty` and nothing uses it yet.
 - **Presentation.** `print-items` uses `princ-to-string`. A real shell wants a
   `present` generic with table rendering, and object identity retained per
   screen region.

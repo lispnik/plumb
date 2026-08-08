@@ -28,7 +28,7 @@
    #:check-pipeline #:pipeline-type-error #:pipeline-type-error-port
    #:pipeline-type-error-upstream #:pipeline-type-error-downstream
    ;; built-in stages
-   #:from-list #:counter #:ls #:lines #:sh #:to-sh #:glob #:ps #:disks #:env #:commits #:changes #:handles
+   #:from-list #:counter #:ls #:lines #:sh #:to-sh #:sh-filter #:glob #:ps #:disks #:env #:commits #:changes #:handles
    #:glob-match #:glob-pattern-p #:read-directory-names #:basename #:map-glob
    #:where #:xform #:take #:drop #:uniq #:sort-by #:tally #:accumulate
    #:peek #:to-text #:print-items #:table #:to-file #:from-file #:tee #:route

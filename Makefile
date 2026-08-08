@@ -34,6 +34,13 @@ LISP     := $(SBCL) --noinform --non-interactive --no-userinit --eval "(require 
 
 .PHONY: all build test test-crypto test-json test-csv test-sql test-arp check-vendored demo repl clean help deps
 
+# Stated rather than left to ordering.  DEPS is defined below but before ALL,
+# and make takes the FIRST target in the file as its default goal -- so a bare
+# `make' checked for ocicl/ and exited 0 having built nothing, while `make demo'
+# and `make test' kept working because they name their target.  A build command
+# that silently does nothing is worse than one that fails.
+.DEFAULT_GOAL := all
+
 # The optional systems need the vendored tree.  ocicl.csv is committed and
 # ocicl/ is not, so a fresh clone has to restore it -- and should be told so
 # plainly rather than meeting an ASDF "component not found" backtrace.

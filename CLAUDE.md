@@ -20,10 +20,22 @@ ocicl install                              ; restore ocicl/ after a fresh clone
 
 ## Design decisions already made — don't relitigate these without reason
 
-- **A stage contains no concurrency**, with one deliberate exception: `tee`
-  calls `run` to start its branches. It stays within the rule where it matters
+- **A stage contains no concurrency**, with two deliberate exceptions. `tee`
+  calls `run` to start its branches; it stays within the rule where it matters
   -- all coordination is still `send`/`recv` and one `unwind-protect`, and the
-  threads belong to `run`.
+  threads belong to `run`. `sh-filter` is the real exception: it runs a feeder
+  thread of its own, and that is *forced*, not chosen. A mid-pipeline command
+  must write the child's stdin and read its stdout at once -- write it all
+  first and the kernel's 64K pipe buffer fills with nobody draining stdout, and
+  both sides stop for good -- and one thread cannot wait on both, because the
+  object side blocks in `recv`, a condition variable, while the byte side is a
+  file descriptor. What keeps the exception narrow, and what any change must
+  preserve: **the feeder touches one channel, owns no port, and never closes
+  anything it did not open.** `close-input` stays with `spawn-stage` on the
+  stage thread, so both refcounts still count exactly the threads `run` knows
+  about -- which is the property the rule exists to protect. It follows that
+  `sh-filter` cannot take `:workers`: two feeders would interleave their lines
+  into one stdin.
 - **A stage contains no concurrency.** Ports arrive via the dynamic variables
   `*input*` and `*outputs*`, bound by `spawn-stage`. A stage body is an ordinary
   loop. All coordination lives in `send`/`recv` and one `unwind-protect`.
@@ -299,6 +311,12 @@ ocicl install                              ; restore ocicl/ after a fresh clone
    its inputs and would otherwise report success without rebuilding.
    `--version` reports `(+crypto +json)` by asking the stage registry, so it
    cannot disagree with what is actually in the image.
+7. **The Makefile states `.DEFAULT_GOAL`.** `deps:` is defined above `all:`,
+   and make takes the first target in the file, so a bare `make` checked for
+   `ocicl/` and exited 0 having built nothing -- while `make test` and
+   `make demo` kept working because they name their target. It went unnoticed
+   from `df4a3fa` until a stage was added and the binary did not have it. A
+   build command that silently does nothing is worse than one that fails.
 
 ## Open work, roughly in priority order
 
@@ -326,18 +344,17 @@ ocicl install                              ; restore ocicl/ after a fresh clone
    routing stage inside a branch. What is left is cosmetic: `explain` can only
    draw the ports it is handed, so `explain foo | route ...` in word mode has
    no way to name branches yet.
-3. **External processes, the rest of it.** `sh` and `to-sh` (`src/process.lisp`)
-   cover the source and sink shapes: lifetime is handled in `with-command`'s
-   `unwind-protect`, and a non-zero exit signals `command-failed`, which rides
-   the existing `:err` port. Two pieces remain.
-   - *A mid-pipeline filter* (`objects -> stdin`, `stdout -> objects`). It must
-     write and read the child concurrently or the pipe buffers deadlock, and it
-     also blocks in `recv`, which is a condition variable and so cannot be
-     selected on alongside file descriptors. That forces a helper thread inside
-     the stage, i.e. an explicit exception to "a stage contains no concurrency".
-     Decide that deliberately or not at all.
-   - *A PTY path* for interactive programs. `sb-ext:run-program` takes `:pty`,
-     which is the hook; nothing uses it.
+3. **External processes, the rest of it.** `sh`, `to-sh` and `sh-filter`
+   (`src/process.lisp`) cover the source, sink and filter shapes: lifetime is
+   handled in `with-command`'s `unwind-protect`, and a non-zero exit signals
+   `command-failed`, which rides the existing `:err` port. The mid-pipeline
+   filter is **done**, with the feeder thread taken deliberately (see the
+   design decision above). Its teardown order is load-bearing and is commented
+   as such: on the path where the stage unwound, the child is killed *before*
+   waiting for the feeder, because a feeder parked on a full pipe cannot be
+   woken by any channel operation -- only by the read end closing. What remains
+   is *a PTY path* for interactive programs; `sb-ext:run-program` takes `:pty`,
+   which is the hook, and nothing uses it.
 4. **Presentation, the rest of it.** `present` (`src/present.lisp`) is the
    generic, and `table` renders aligned columns driven by `fields`. What is
    still missing is object identity retained per screen region
