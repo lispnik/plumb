@@ -83,11 +83,21 @@ jobs:
           repository: lispnik/arp-scan
           path: arp-scan
 
+      # libsqlite3 is plumb's first and only C dependency, reached by dbd-sqlite3
+      # through CFFI.  ocicl comes from a PINNED release tarball: Homebrew is
+      # not on PATH on this runner, and the apt repo means a keyring and a
+      # source list for the sake of one binary.  Pinning also means the version
+      # restoring the tree is the version that pinned it.
       - name: Install SBCL and ocicl
+        env:
+          OCICL_VERSION: 2.17.0
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends sbcl libsqlite3-0
-          brew install ocicl
+          curl -fsSL -o /tmp/ocicl.tgz \
+            "https://github.com/ocicl/ocicl/releases/download/v${OCICL_VERSION}/ocicl-${OCICL_VERSION}-linux-amd64.tar.gz"
+          sudo tar xzf /tmp/ocicl.tgz -C /usr/local/bin ./ocicl
+          sbcl --version
           ocicl version
 
       # ocicl.csv is committed and ocicl/ is not, so this restores an exact
