@@ -154,21 +154,33 @@ nothing until stdin reaches EOF, and the stage thread is meanwhile blocked
 reading the stdout it will never write.  So the close happens on both exit
 paths, including the one where a write failed.
 
-A write to a child that has already gone signals rather than raising SIGPIPE,
-so an error here is expected traffic on the TAKE path and not a fault.  It is
-also what bounds this thread when the child exits early -- SBCL buffers, so the
-failure arrives within a buffer's worth of lines rather than after the whole
-input has been drained."
+Only STREAM-ERROR is swallowed, and the distinction is the whole point.  A
+write to a child that has already gone signals SB-INT:BROKEN-PIPE -- a
+STREAM-ERROR -- rather than raising SIGPIPE, and that is expected traffic on
+the TAKE path, not a fault.  It is also what bounds this thread when the child
+exits early: SBCL buffers, so the failure arrives within a buffer's worth of
+lines rather than after the whole input has been drained.
+
+EVERYTHING ELSE PROPAGATES, and must.  An error from AS, or a value it returned
+that WRITE-LINE cannot take, means the command is being fed a truncated stream;
+swallowing that gave a short answer, no failure recorded and exit 0 -- the
+`a failed pipeline must not look like an empty one' trap, one thread removed
+from where it was fixed.  Nothing is signalled from HERE, because this thread
+is not a counted producer on :err and must not touch a port.  %RUN-TASK catches
+it into TASK-CONDITION, and the stage thread re-signals it after AWAIT, where
+SPAWN-STAGE's own handler records it and sends it out :err like any other."
   (spawn (format nil "plumb:feed>~a" label)
          (lambda ()
            (let ((*print-pretty* nil))
              (unwind-protect
-                  (ignore-errors
-                   (loop
-                     (multiple-value-bind (obj ok) (recv input)
-                       (unless ok (return))
-                       (write-line (funcall as obj) stream)))
-                   (finish-output stream))
+                  (handler-case
+                      (progn
+                        (loop
+                          (multiple-value-bind (obj ok) (recv input)
+                            (unless ok (return))
+                            (write-line (funcall as obj) stream)))
+                        (finish-output stream))
+                    (stream-error () nil))
                (ignore-errors (close stream)))))))
 
 (defstage sh-filter ((command (or string cons)) &key directory as
@@ -228,7 +240,17 @@ A non-zero exit signals COMMAND-FAILED unless ON-EXIT is :IGNORE, and STDERR is
           ;; Everything above makes the feeder terminate; the timeout is for
           ;; the child that ignores SIGTERM, which would otherwise hang the
           ;; whole pipeline here rather than just itself.
-          (await feeder :timeout 5))))))
+          ;;
+          ;; AWAIT returns what the feeder died of, and re-signalling it HERE is
+          ;; what puts a helper thread's failure back under the ordinary rules:
+          ;; SPAWN-STAGE's handler records it on the pipeline and sends it out
+          ;; :err, from a thread that is actually counted as a producer there.
+          ;; Only on the drained path -- once downstream has gone the stage is
+          ;; already unwinding with a condition of its own, and a feeder that
+          ;; lost its pipe on the way out has nothing to add.
+          (let ((failure (await feeder :timeout 5)))
+            (when (and failure drained)
+              (error failure))))))))
 
 ;;; ------------------------------------------------------------------- ps
 ;;;

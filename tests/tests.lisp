@@ -1226,6 +1226,52 @@ Both the child and the feeder have to stop, and the pipeline has to return."
                                  (sh-filter "head -1" :on-exit :ignore))))
            :child-exiting-early-still-returns)))
 
+(defun test-sh-filter-feeder-errors-are-not-swallowed ()
+  "The feeder runs on its own thread, which is exactly how a failure there
+escaped SPAWN-STAGE's handler and became a short answer with exit 0.  Both
+halves matter: a real error must be reported, and the broken pipe a TAKE causes
+must NOT be, or every bounded filter would report a spurious failure."
+  (with-timeout (20 :sh-filter-feeder-errors)
+    ;; An error inside :AS truncates what the command sees.  That must not look
+    ;; like a complete run.
+    (multiple-value-bind (out failures)
+        (let ((n 0))
+          (collect-pipeline
+           (list (from-list '("a" "b" "c" "d" "e"))
+                 (sh-filter "cat" :as (lambda (x) (incf n) (if (> n 2) (error "boom") x))))
+           :errorp nil))
+      (declare (ignorable out))
+      (check (= 1 (length failures)) :throwing-as-is-recorded)
+      (check (eq 'sh-filter (car (first failures))) :recorded-against-the-stage))
+    ;; ...and with the default :ERRORP it reaches the caller.
+    (check (eq :signalled
+               (handler-case
+                   (collect-pipeline (list (from-list '("a"))
+                                           (sh-filter "cat" :as (lambda (x)
+                                                                  (declare (ignore x))
+                                                                  (error "boom")))))
+                 (pipeline-error () :signalled)))
+           :throwing-as-signals)
+    ;; A value WRITE-LINE cannot take is the same failure by another route --
+    ;; this one silently produced NOTHING AT ALL and reported success.
+    (multiple-value-bind (out failures)
+        (collect-pipeline (list (from-list '(1 2 3))
+                                (sh-filter "cat" :as #'identity))
+                          :errorp nil)
+      (declare (ignorable out))
+      (check (= 1 (length failures)) :non-string-from-as-is-recorded))
+    ;; The other half.  A bounded consumer breaks the child's pipe under the
+    ;; feeder, and SB-INT:BROKEN-PIPE is a STREAM-ERROR: expected traffic, not
+    ;; a fault.  Nothing may be recorded here.
+    (let* ((sink (make-channel :capacity 4))
+           (pipe (run (list (counter :from 1) (sh-filter "cat") (take 3)) :sink sink)))
+      (loop (multiple-value-bind (obj ok) (recv sink)
+              (declare (ignore obj))
+              (unless ok (return))))
+      (close-input sink)
+      (join pipe)
+      (check (null (pipeline-failures pipe)) :take-path-reports-no-failure))))
+
 (defun test-sh-filter-exit-status ()
   (with-timeout (15 :sh-filter-exit)
     (let ((pipe (run (list (from-list '("x")) (sh-filter "cat >/dev/null; exit 3")))))
@@ -2293,6 +2339,7 @@ until FROM or BY was given, and then it emitted NOTHING rather than erroring."
                   test-sh-filter-needs-stdin-eof
                   test-sh-filter-survives-a-full-pipe
                   test-sh-filter-teardown
+                  test-sh-filter-feeder-errors-are-not-swallowed
                   test-sh-filter-exit-status
                   test-to-sh-sink
                   test-lines-still-works
