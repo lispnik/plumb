@@ -126,24 +126,81 @@ point under `/mnt/my disk` arrives as `/mnt/my\\040disk`."
                    (progn (write-char c out) (incf i)))))
     (get-output-stream-string out)))
 
-(defun parse-df-usage (stream)
-  "`df -Pk` as an alist of device node -> (used . available), in BYTES.
+(defun tokens-with-starts (line)
+  "LINE's whitespace-separated tokens, each as (TOKEN . START-INDEX).
+The indices are what let a caller recover a field verbatim rather than by
+re-joining tokens, which would flatten a run of spaces inside a name."
+  (let ((out '()) (i 0) (n (length line)))
+    (loop while (< i n)
+          do (loop while (and (< i n) (member (char line i) '(#\Space #\Tab)))
+                   do (incf i))
+             (let ((start i))
+               (loop while (and (< i n) (not (member (char line i) '(#\Space #\Tab))))
+                     do (incf i))
+               (when (> i start) (push (cons (subseq line start i) start) out))))
+    (nreverse out)))
+
+(defun percent-token-p (text)
+  (let ((n (1- (length text))))
+    (and (plusp n) (char= (char text n) #\%)
+         (every #'digit-char-p (subseq text 0 n)))))
+
+(defun parse-df-row (line)
+  "One `df -Pk` row as (VALUES device blocks used available capacity path), the
+three sizes in BYTES and CAPACITY as an integer percentage.  NIL if LINE is not
+a row.
+
+NEITHER END IS A SINGLE TOKEN, which is the whole difficulty.  A macOS volume is
+routinely `/Volumes/Macintosh HD`, and macOS's own automounter names devices
+`map -hosts` and `map auto_home` -- so splitting from the left loses the mount
+point and splitting from the right loses the device.  What -P does fix is the
+shape BETWEEN them: three integers and a percentage, in that order.  The
+percentage is therefore the anchor, and both names are taken verbatim from the
+line rather than rebuilt from tokens.
 
 -P is POSIX and -k pins the block size to 1024 on both platforms, which is the
-point: without -k, macOS reports 512-byte blocks and GNU df reports 1024, so
-the same command would mean different numbers on the two systems."
+point: without -k, macOS reports 512-byte blocks and GNU df reports 1024, so the
+same command would mean different numbers on the two systems."
+  (let* ((tokens (tokens-with-starts line))
+         (n (length tokens))
+         (anchor (loop for i from 3 below n
+                       when (and (percent-token-p (car (nth i tokens)))
+                                 (every (lambda (k)
+                                          (parse-integer (car (nth k tokens))
+                                                         :junk-allowed t))
+                                        (list (- i 3) (- i 2) (- i 1))))
+                         return i)))
+    (when (and anchor (< (1+ anchor) n))
+      (flet ((kb (i) (let ((v (parse-integer (car (nth i tokens)) :junk-allowed t)))
+                       (when v (* v 1024)))))
+        (values (string-right-trim " " (subseq line 0 (cdr (nth (- anchor 3) tokens))))
+                (kb (- anchor 3))
+                (kb (- anchor 2))
+                (kb (- anchor 1))
+                (parse-integer (car (nth anchor tokens)) :junk-allowed t)
+                (string-right-trim '(#\Space #\Return)
+                                   (subseq line (cdr (nth (1+ anchor) tokens)))))))))
+
+(defun map-df-rows (stream function)
+  "Call FUNCTION on each parsed `df -Pk` row, header skipped."
+  (read-line stream nil nil)                      ; the header
+  (loop for line = (read-line stream nil nil)
+        while line
+        do (multiple-value-bind (device blocks used available capacity path)
+               (parse-df-row line)
+             (when device
+               (funcall function device blocks used available capacity path)))))
+
+(defun parse-df-usage (stream)
+  "`df -Pk` as an alist of device node -> (used . available), in BYTES.
+What DISKS wants: only real devices, keyed the way /sys/block and diskutil name
+them.  MOUNTS reads the same rows and keeps all of them, keyed by path."
   (let ((table '()))
-    (read-line stream nil nil)                    ; the header
-    (loop for line = (read-line stream nil nil)
-          while line
-          do (let ((f (split-on-spaces line)))
-               (when (and (>= (length f) 4) (eql 0 (search "/dev/" (first f))))
-                 (let ((used (parse-integer (third f) :junk-allowed t))
-                       (available (parse-integer (fourth f) :junk-allowed t)))
-                   (push (cons (first f)
-                               (cons (when used (* used 1024))
-                                     (when available (* available 1024))))
-                         table)))))
+    (map-df-rows stream
+                 (lambda (device blocks used available capacity path)
+                   (declare (ignore blocks capacity path))
+                   (when (eql 0 (search "/dev/" device))
+                     (push (cons device (cons used available)) table))))
     (nreverse table)))
 
 (defun linux-usage-table ()
@@ -369,3 +426,155 @@ are macOS-only; .virtual is set on both, from a disk image on macOS and from an
 attached loop device on Linux."
   (:consumes nil) (:produces :objects)
   (map-block-devices (lambda (device) (emit device))))
+
+;;; ------------------------------------------------------------------ mounts
+;;;
+;;; DISKS answers "what hardware is there"; this answers "what is mounted and
+;;; how full is it", which is the question a shell is actually asked.  They
+;;; overlap deliberately -- a mounted partition appears in both -- because the
+;;; two views want different keys: DISKS is per device and includes the
+;;; unmounted, MOUNTS is per mount point and includes filesystems no device
+;;; backs at all (tmpfs, devfs, an automounter map).
+;;;
+;;; The platform split is the opposite way round from DISKS, and gentler.  `df
+;;; -Pk' is POSIX and gives the same six columns on both systems, so the SIZES
+;;; come from one command rather than two implementations.  Only the filesystem
+;;; TYPE and the mount options differ: Linux has them in /proc/mounts, a kernel
+;;; interface, and macOS has them only from `mount', a tool.  A filesystem
+;;; missing from that second lookup still gets emitted with a NIL .fs-type --
+;;; the sizes are the part worth having, and dropping a row because its type is
+;;; unknown would be losing data to tidiness.
+
+(defstruct (mount (:conc-name mount-))
+  device                                ; "/dev/disk3s1s1", "tmpfs", "map -hosts"
+  path                                  ; where it is mounted; .path as LS uses
+  fs-type                               ; "apfs" / "ext4" / "tmpfs", or NIL
+  ;; BYTES, like everything else here, so one 10gb literal works against
+  ;; .available, LS's .size and PS's .rss alike.
+  size used available
+  capacity                              ; percent full, as df computes it
+  read-only
+  options)                              ; the rest of them, as a list of strings
+
+(defmethod present ((m mount))
+  (format nil "~24a ~10@a  ~@[~a~]"
+          (mount-path m)
+          (if (mount-size m) (format nil "~d" (mount-size m)) "")
+          (mount-fs-type m)))
+
+#+linux
+(defun mount-details ()
+  "Mount point -> (fs-type . options), from /proc/mounts.
+
+A kernel interface rather than a tool, and octal-escaped: a mount point under
+`/mnt/my disk' arrives as `/mnt/my\\040disk', which is what UNESCAPE-MOUNT-FIELD
+is for.  Keyed by mount point rather than device, because that is what df's
+last column gives and because several devices can be `none'."
+  (let ((table '()))
+    (ignore-errors
+     (with-open-file (in "/proc/mounts" :if-does-not-exist nil)
+       (when in
+         (loop for line = (read-line in nil nil)
+               while line
+               do (let ((f (split-on-spaces line)))
+                    (when (>= (length f) 4)
+                      (push (cons (unescape-mount-field (second f))
+                                  (cons (third f)
+                                        (split-on-commas (fourth f))))
+                            table)))))))
+    (nreverse table)))
+
+#+darwin
+(defun mount-details ()
+  "Mount point -> (fs-type . options), from `mount'.
+
+  /dev/disk3s1s1 on / (apfs, sealed, local, read-only, journaled)
+
+The parenthetical's first item is the type and the rest are options, which is
+also where read-only lives -- macOS has no /proc/mounts, so this is a tool being
+parsed and should be treated as the part most likely to rot.  ` on ' is searched
+for from the RIGHT: a device named `map -hosts' cannot contain it, but a volume
+called `/Volumes/Bits on Toast' certainly can."
+  (let ((table '()))
+    (ignore-errors
+     (with-command (proc (list "mount") '(:output :stream) :on-exit :ignore)
+       (let ((stream (sb-ext:process-output proc)))
+         (loop for line = (read-line stream nil nil)
+               while line
+               do (let ((open (position #\( line :from-end t))
+                        (on (search " on " line :from-end t)))
+                    (when (and open on (< on open))
+                      (let ((close (position #\) line :from-end t))
+                            (path (subseq line (+ on 4) (1- open))))
+                        (when close
+                          (push (cons (string-right-trim " " path)
+                                      (split-on-commas
+                                       (subseq line (1+ open) close)))
+                                table)))))))))
+    (nreverse table)))
+
+#-(or linux darwin)
+(defun mount-details ()
+  '())
+
+(defun split-on-commas (text)
+  "Comma-separated options, trimmed.  /proc/mounts writes them without spaces
+and `mount' writes them with; one reader for both."
+  (let ((out '()) (start 0))
+    (loop for pos = (position #\, text :start start)
+          do (push (string-trim " " (subseq text start pos)) out)
+             (if pos (setf start (1+ pos)) (return)))
+    (remove "" (nreverse out) :test #'string=)))
+
+(defun map-mounts (function)
+  "Call FUNCTION with one MOUNT per mounted filesystem."
+  (let ((details (mount-details))
+        (rows '()))
+    ;; Collected inside the body: WITH-COMMAND returns FINISH-COMMAND's value,
+    ;; not the body's.  That exact mistake made DISKS emit nothing on Linux.
+    (ignore-errors
+     (with-command (proc (list "df" "-Pk") '(:output :stream) :on-exit :ignore)
+       (map-df-rows (sb-ext:process-output proc)
+                    (lambda (device blocks used available capacity path)
+                      (push (list device blocks used available capacity path)
+                            rows)))))
+    (dolist (row (nreverse rows))
+      (destructuring-bind (device blocks used available capacity path) row
+        (let ((options (cdr (assoc path details :test #'string=))))
+          (funcall function
+                   (make-mount :device device
+                               :path path
+                               :fs-type (car options)
+                               :size blocks
+                               :used used
+                               :available available
+                               :capacity capacity
+                               :read-only (and (member "read-only" (cdr options)
+                                                       :test #'string=)
+                                               t)
+                               :options (cdr options))))))))
+
+(defstage mounts ()
+  "Emit a MOUNT per mounted filesystem: where it is, what it is, and how full.
+
+  mounts | table
+  mounts | where {(> .capacity 90)} | table :columns (list :path :capacity)
+  mounts | where {(string= .fs-type \"apfs\")} | sort-by .available | table
+  mounts | where {(> .available 10gb)} | print-items
+
+Sizes are BYTES, so one 10gb literal means the same here as against LS's .size.
+.capacity is the percentage df computes, which is not always .used/.size --
+reserved blocks make the two disagree, and df's is the one that matches what
+every other tool on the machine reports.
+
+Everything mounted is emitted, including tmpfs, devfs and automounter entries
+that no device backs -- narrowing is WHERE and ordering is SORT-BY, the rule PS
+and DISKS already follow.  DISKS is the other half of this: per DEVICE rather
+than per mount point, and it includes what is not mounted.
+
+Sizes come from `df -Pk` on both platforms, so they agree by construction.  The
+filesystem type and options do not: Linux reads /proc/mounts, a kernel
+interface, and macOS parses `mount`, a tool.  A filesystem the second lookup
+misses still arrives, with .fs-type NIL."
+  (:consumes nil) (:produces :objects)
+  (map-mounts (lambda (m) (emit m))))

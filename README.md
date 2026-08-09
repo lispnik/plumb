@@ -728,6 +728,27 @@ Its path is named explicitly (`ARPSCAN` in the Makefile) rather than left to
 your ASDF registry, and a missing checkout gives a binary without `hosts` rather
 than a failed build.
 
+## mounts
+
+`disks` answers what hardware is there; `mounts` answers what is mounted and how
+full it is, which is what a shell actually gets asked:
+
+```
+$ plumb 'mounts | where {(> .capacity 90)} | sort-by .available | table :columns (list :path :capacity :available)'
+path                       capacity    available
+/System/Volumes/Preboot          98  10094669824
+/                                98  10094669824
+```
+
+Sizes are bytes, so `{(> .available 10gb)}` works. `.capacity` is the percentage
+`df` computes, which is not always `.used`/`.size` — reserved blocks make them
+disagree, and df's is what every other tool on the machine reports.
+
+Everything mounted is emitted, tmpfs and automounter entries included; narrowing
+is `where`. Sizes come from `df -Pk` on both platforms so they agree by
+construction, and only `.fs-type` and `.options` fork — `/proc/mounts` on Linux,
+the `mount` tool on macOS.
+
 ## disks
 
 Block devices as objects — every disk, partition and volume, mounted or not:

@@ -1823,6 +1823,71 @@ answer that reads fine."
                       mounted)
                :mounted-devices-report-usage)))))
 
+(defun test-df-row-parsing ()
+  "The part that cannot be tested against this machine: a `df' row where BOTH
+ends contain spaces.  Synthetic on purpose -- creating a volume called
+`/Volumes/Bits on Toast' needs privileges a test has no business wanting, and
+the parse is exactly where a plausible-but-wrong answer would come from."
+  (with-timeout (5 :df-row)
+    ;; An ordinary row.
+    (multiple-value-bind (device blocks used available capacity path)
+        (plumb::parse-df-row "/dev/disk3s1s1   482797652 472954352   9843300      98% /")
+      (check (string= "/dev/disk3s1s1" device) :device)
+      (check (= (* 482797652 1024) blocks) :blocks-are-bytes)
+      (check (= (* 472954352 1024) used) :used)
+      (check (= (* 9843300 1024) available) :available)
+      (check (eql 98 capacity) :capacity-is-a-number)
+      (check (string= "/" path) :path))
+    ;; A mount point with spaces -- everything after the percentage.
+    (multiple-value-bind (device blocks used available capacity path)
+        (plumb::parse-df-row "/dev/disk5s1  100 40 60 40% /Volumes/Bits on Toast")
+      (declare (ignore blocks used available capacity))
+      (check (string= "/dev/disk5s1" device) :device-before-a-spaced-path)
+      (check (string= "/Volumes/Bits on Toast" path) :spaces-in-the-mount-point))
+    ;; A DEVICE with spaces, which macOS's automounter really does produce.
+    (multiple-value-bind (device blocks used available capacity path)
+        (plumb::parse-df-row "map -hosts  0 0 0 100% /net")
+      (declare (ignore blocks used available capacity))
+      (check (string= "map -hosts" device) :spaces-in-the-device)
+      (check (string= "/net" path) :path-after-a-spaced-device))
+    ;; Both at once, which is what defeats splitting from either end.
+    (multiple-value-bind (device blocks used available capacity path)
+        (plumb::parse-df-row "map auto_home  0 0 0 100% /System/Volumes/Data/home dir")
+      (declare (ignore blocks used available capacity))
+      (check (string= "map auto_home" device) :both-ends-spaced-device)
+      (check (string= "/System/Volumes/Data/home dir" path) :both-ends-spaced-path))
+    ;; Not a row.
+    (check (null (plumb::parse-df-row "Filesystem 1024-blocks Used Available Capacity Mounted on"))
+           :the-header-is-not-a-row)
+    (check (null (plumb::parse-df-row "")) :a-blank-line-is-not-a-row)))
+
+(defun test-mounts ()
+  "MOUNTS against the system's own df, since a parser of tool output fails by
+producing plausible numbers rather than by erroring."
+  (with-timeout (30 :mounts)
+    (let* ((all (collect-pipeline (list (mounts))))
+           (root (find "/" all :key #'mount-path :test #'string=)))
+      (check (plusp (length all)) :something-is-mounted)
+      (check root :root-is-among-them)
+      (when root
+        (check (and (mount-size root) (plusp (mount-size root))) :root-has-a-size)
+        (check (and (mount-available root) (>= (mount-available root) 0)) :root-has-free-space)
+        ;; The type comes from a different source than the sizes on both
+        ;; platforms -- /proc/mounts on Linux, `mount' on macOS -- so its
+        ;; presence is the thing worth asserting.
+        (check (stringp (mount-fs-type root)) :root-has-a-filesystem-type)
+        ;; Cross-check the size against a fresh df, the way the disks tests
+        ;; cross-check against lsblk and diskutil.
+        (let ((reported (with-output-to-string (s)
+                          (sb-ext:run-program "/bin/sh" (list "-c" "df -Pk / | tail -1")
+                                              :output s :search nil))))
+          (multiple-value-bind (device blocks) (plumb::parse-df-row reported)
+            (declare (ignore device))
+            (check (eql blocks (mount-size root)) :size-agrees-with-df))))
+      ;; Every row keeps its path, and paths are what this stage is keyed on.
+      (check (every (lambda (m) (and (mount-path m) (plusp (length (mount-path m))))) all)
+             :every-mount-has-a-path))))
+
 (defun test-disks-has-no-selection-options ()
   "Same argument PS makes: narrowing is WHERE.  If DISKS grew a filter it would
 be the start of re-implementing lsblk's option set."
@@ -2479,6 +2544,8 @@ fix the file that stops it starting is no use to anybody."
                   test-disks-emits-something
                   test-disks-agrees-with-the-system-tool
                   test-disks-usage-only-where-mounted
+                  test-df-row-parsing
+                  test-mounts
                   test-disks-has-no-selection-options
                   test-pool-reuses-threads
                   test-pool-never-waits-for-a-free-worker

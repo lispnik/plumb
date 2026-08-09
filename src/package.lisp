@@ -28,7 +28,7 @@
    #:check-pipeline #:pipeline-type-error #:pipeline-type-error-port
    #:pipeline-type-error-upstream #:pipeline-type-error-downstream
    ;; built-in stages
-   #:from-list #:counter #:ls #:lines #:sh #:to-sh #:sh-filter #:glob #:ps #:disks #:env #:commits #:changes #:handles
+   #:from-list #:counter #:ls #:lines #:sh #:to-sh #:sh-filter #:glob #:ps #:disks #:mounts #:env #:commits #:changes #:handles
    #:glob-match #:glob-pattern-p #:read-directory-names #:basename #:map-glob
    #:where #:xform #:take #:drop #:uniq #:sort-by #:tally #:accumulate
    #:peek #:to-text #:print-items #:table #:to-file #:from-file #:tee #:route
@@ -78,6 +78,9 @@
    #:block-device-parent #:block-device-size #:block-device-block-size
    #:block-device-read-only #:block-device-removable #:block-device-model
    #:block-device-mount-point #:block-device-fs-type
+   #:mount #:mount-p #:make-mount
+   #:mount-device #:mount-path #:mount-fs-type #:mount-size #:mount-used
+   #:mount-available #:mount-capacity #:mount-read-only #:mount-options
    #:block-device-used #:block-device-available
    #:block-device-major #:block-device-minor #:block-device-rotational
    #:block-device-start #:block-device-content #:block-device-protocol

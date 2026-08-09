@@ -178,6 +178,25 @@ ocicl install                              ; restore ocicl/ after a fresh clone
   names case-insensitively everywhere else. `\uXXXX` is UTF-16, so a leading
   surrogate must consume its trailing pair or every emoji decodes to two broken
   halves.
+- **A `df` row cannot be split from either end.** `mounts` and `disks` both
+  read `df -Pk`, and BOTH ends of a row can contain spaces: a macOS volume is
+  routinely `/Volumes/Macintosh HD`, and macOS's own automounter names devices
+  `map -hosts` and `map auto_home`. Splitting from the left loses the mount
+  point, from the right loses the device. What `-P` fixes is the shape
+  *between* them -- three integers then a percentage -- so the percentage is
+  the anchor, and both names are taken verbatim from the line by index rather
+  than rebuilt by joining tokens, which would flatten a run of spaces. `-k` is
+  not optional either: without it macOS reports 512-byte blocks and GNU df
+  reports 1024, so the same command would mean different numbers.
+- **`mounts` is per mount point; `disks` is per device.** They overlap on
+  purpose. `disks` includes the unmounted and is keyed the way `/sys/block` and
+  `diskutil` name things; `mounts` includes filesystems no device backs at all
+  (tmpfs, devfs, an automounter map) and is keyed by path. The platform split
+  is also the other way round and gentler: `df -Pk` gives the *sizes* on both,
+  so they agree by construction, and only the filesystem type and options fork
+  -- `/proc/mounts` on Linux, the `mount` tool on macOS. A filesystem that
+  second lookup misses is still emitted with `.fs-type` NIL; dropping a row for
+  tidiness would be losing data.
 - **`disks` reads a kernel interface on Linux and a *tool* on macOS.** That
   asymmetry is the feature's main risk and should not be papered over:
   `/sys/block` is stable ABI, `diskutil` is a user command whose output has
