@@ -1181,6 +1181,11 @@ completion all read that one package.
   the source, sink and filter shapes with real teardown and exit-status
   propagation. What remains is a PTY path for interactive programs;
   `sb-ext:run-program` takes `:pty` and nothing uses it yet.
-- **Presentation.** `print-items` uses `princ-to-string`. A real shell wants a
-  `present` generic with table rendering, and object identity retained per
-  screen region.
+- **Presentation, the rest of it.** `present` is the generic — `print-items`
+  and the CLI's own printer both go through it — and `table` renders aligned
+  columns driven by `fields`. What is still missing is object identity retained
+  per screen region (CLIM-presentation style), so previous output stays live
+  and clickable. Prototyped once and removed: the retained-object half is
+  exact, but mapping a screen position back to an object is not, because plumb
+  streams to a terminal it does not own — a wrapped line resolves a click to
+  the *wrong* object rather than to none.
